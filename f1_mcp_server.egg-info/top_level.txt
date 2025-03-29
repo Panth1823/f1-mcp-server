@@ -1,0 +1,2 @@
+f1_mcp_server
+f1_websocket

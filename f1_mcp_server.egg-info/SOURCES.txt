@@ -1,0 +1,9 @@
+setup.py
+f1_mcp_server/__init__.py
+f1_mcp_server.egg-info/PKG-INFO
+f1_mcp_server.egg-info/SOURCES.txt
+f1_mcp_server.egg-info/dependency_links.txt
+f1_mcp_server.egg-info/requires.txt
+f1_mcp_server.egg-info/top_level.txt
+f1_websocket/__init__.py
+f1_websocket/server.py
