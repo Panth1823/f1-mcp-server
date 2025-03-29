@@ -1,8 +1,0 @@
-Metadata-Version: 2.4
-Name: f1-mcp-server
-Version: 0.1.0
-Requires-Dist: fastapi
-Requires-Dist: uvicorn
-Requires-Dist: python-dotenv
-Requires-Dist: mcp
-Dynamic: requires-dist
