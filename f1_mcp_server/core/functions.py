@@ -504,26 +504,88 @@ get_events_remaining = f1_provider.get_events_remaining
 async def get_current_session() -> Dict[str, Any]:
     """Get information about the current or most recent F1 session"""
     try:
-        session_info = await openf1.get_latest_session()
-        if session_info:
-            # Enhance with FastF1 data if available
-            session = fastf1.get_session(
-                session_info['year'],
-                session_info['meeting_name'],
-                session_info['session_name']
-            )
-            if session:
-                weather = fastf1.get_session_weather(session)
-                session_info['weather'] = weather
-
+        current_year = datetime.now().year
+        schedule = fastf1.get_event_schedule(current_year)
+        
+        if schedule is None or schedule.empty:
+            return {
+                "status": "error",
+                "message": "No schedule found for current year"
+            }
+        
+        # Get the most recent event
+        current_date = pd.Timestamp.now().tz_localize('UTC')
+        
+        # Convert event dates to timestamps with UTC timezone
+        schedule['EventDate'] = pd.to_datetime(schedule['EventDate']).apply(
+            lambda x: x.tz_localize('UTC') if x.tzinfo is None else x.tz_convert('UTC')
+        )
+        recent_events = schedule[schedule['EventDate'] <= current_date]
+        
+        if recent_events.empty:
+            return {
+                "status": "error",
+                "message": "No recent events found"
+            }
+        
+        # Get the most recent event
+        latest_event = recent_events.iloc[-1]
+        
+        # Convert session dates to timestamps
+        def safe_convert_timestamp(date_str):
+            if pd.isna(date_str):
+                return None
+            try:
+                ts = pd.to_datetime(date_str)
+                return ts.tz_localize('UTC') if ts.tzinfo is None else ts.tz_convert('UTC')
+            except:
+                return None
+        
+        session_dates = [
+            safe_convert_timestamp(latest_event['Session1Date']),
+            safe_convert_timestamp(latest_event['Session2Date']),
+            safe_convert_timestamp(latest_event['Session3Date']),
+            safe_convert_timestamp(latest_event['Session4Date']),
+            safe_convert_timestamp(latest_event['Session5Date'])
+        ]
+        
+        # Filter out None/NaT values and get the most recent
+        valid_dates = [d for d in session_dates if d is not None and d <= current_date]
+        if not valid_dates:
+            return {
+                "status": "error",
+                "message": "No recent sessions found"
+            }
+        
+        latest_session_date = max(valid_dates)
+        session_number = session_dates.index(latest_session_date) + 1
+        
+        # Get session details
+        session = fastf1.get_session(current_year, latest_event['EventName'], session_number)
+        if session:
+            session.load()
+            
             return {
                 "status": "success",
-                "data": session_info,
-                "source": "OpenF1 + FastF1"
+                "data": {
+                    "year": current_year,
+                    "event_name": latest_event['EventName'],
+                    "session_name": f"Session {session_number}",
+                    "date": latest_session_date.isoformat(),
+                    "circuit": latest_event['Location'],
+                    "country": latest_event['Country'],
+                    "weather": {
+                        'air_temp': float(session.weather_data['AirTemp'].mean()) if session.weather_data is not None and 'AirTemp' in session.weather_data else None,
+                        'track_temp': float(session.weather_data['TrackTemp'].mean()) if session.weather_data is not None and 'TrackTemp' in session.weather_data else None,
+                        'humidity': float(session.weather_data['Humidity'].mean()) if session.weather_data is not None and 'Humidity' in session.weather_data else None
+                    } if session.weather_data is not None else None
+                },
+                "source": "FastF1"
             }
+            
         return {
             "status": "error",
-            "message": "No current session found"
+            "message": "Could not load session data"
         }
     except Exception as e:
         logger.error(f"Error in get_current_session: {str(e)}")
