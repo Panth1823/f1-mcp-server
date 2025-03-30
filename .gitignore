@@ -1,37 +1,78 @@
-# Python cache files
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
-
-# Distribution / packaging
-*.egg-info/
-dist/
+*.so
+.Python
 build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
 *.egg
 
-# Virtual environment
+# Virtual Environment
 venv/
 env/
 ENV/
 
-# FastF1 cache
-fastf1_cache/*
-!fastf1_cache/.gitkeep
-
-# IDE specific files
+# IDE
 .idea/
 .vscode/
 *.swp
 *.swo
+.DS_Store
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# FastF1 Cache
+fastf1_cache/
 
 # Environment variables
 .env
 .env.local
+.env.*.local
 
 # Logs
 *.log
+logs/
+log/
 
-# Test cache
-.pytest_cache/
-.coverage
-htmlcov/ 
+# Docker
+.docker/
+docker-compose.override.yml
+
+# Distribution / packaging
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg 

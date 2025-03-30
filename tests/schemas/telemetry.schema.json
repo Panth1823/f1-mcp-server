@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["driver", "lap_number", "telemetry"],
+  "properties": {
+    "driver": {
+      "type": "string",
+      "pattern": "^[0-9]{1,2}$"
+    },
+    "lap_number": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "telemetry": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["time", "speed", "throttle", "brake", "gear", "rpm", "drs"],
+        "properties": {
+          "time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "speed": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 400
+          },
+          "throttle": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "brake": {
+            "type": "boolean"
+          },
+          "gear": {
+            "type": "integer",
+            "minimum": -1,
+            "maximum": 8
+          },
+          "rpm": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 15000
+          },
+          "drs": {
+            "type": "integer",
+            "enum": [0, 1]
+          }
+        }
+      }
+    }
+  }
+} 

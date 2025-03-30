@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  f1_mcp:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - fastf1_cache:/app/fastf1_cache
+    environment:
+      - FASTF1_CACHE_DIR=/app/fastf1_cache
+      - PYTHONPATH=/app
+    command: uvicorn f1_mcp_server.main:app --host 0.0.0.0 --port 8000 --reload
+
+volumes:
+  fastf1_cache: 

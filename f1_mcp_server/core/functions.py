@@ -21,24 +21,27 @@ logger = logging.getLogger(__name__)
 # Initialize FastF1 cache
 fastf1.Cache.enable_cache('fastf1_cache')
 
+
 class F1DataProvider:
     """Provider for F1 data"""
-    
+
     def __init__(self):
         self.aggregator = DataAggregator()
         self.logger = logging.getLogger(__name__)
-        
+
     @cached(ttl=3600)  # Cache for 1 hour
     async def get_race_calendar(self, year: int) -> Dict:
         """Get F1 season schedule"""
         try:
             schedule = fastf1.get_event_schedule(year)
             if schedule is None:
-                raise HTTPException(status_code=404, detail=f"No schedule found for year {year}")
+                raise HTTPException(
+                    status_code=404, detail=f"No schedule found for year {year}")
             return schedule.to_dict(orient='records')
         except Exception as e:
             self.logger.error(f"Error fetching race calendar: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Error fetching race calendar: {str(e)}")
+            raise HTTPException(
+                status_code=500, detail=f"Error fetching race calendar: {str(e)}")
 
     @cached(ttl=3600)
     async def get_event_details(self, year: int, event_identifier: str) -> Dict:
@@ -46,13 +49,15 @@ class F1DataProvider:
         try:
             schedule = fastf1.get_event_schedule(year)
             if schedule is None:
-                raise HTTPException(status_code=404, detail=f"No schedule found for year {year}")
-            
+                raise HTTPException(
+                    status_code=404, detail=f"No schedule found for year {year}")
+
             event = schedule[schedule['EventName'].str.contains(event_identifier, case=False) |
-                           schedule['Location'].str.contains(event_identifier, case=False)].iloc[0]
+                             schedule['Location'].str.contains(event_identifier, case=False)].iloc[0]
             if event.empty:
-                raise HTTPException(status_code=404, detail=f"Event {event_identifier} not found in {year} schedule")
-            
+                raise HTTPException(
+                    status_code=404, detail=f"Event {event_identifier} not found in {year} schedule")
+
             return {
                 "event_name": event['EventName'],
                 "circuit_name": event['Location'],
@@ -68,7 +73,8 @@ class F1DataProvider:
             raise
         except Exception as e:
             self.logger.error(f"Error fetching event details: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Error fetching event details: {str(e)}")
+            raise HTTPException(
+                status_code=500, detail=f"Error fetching event details: {str(e)}")
 
     @cached(ttl=1800)  # Cache for 30 minutes
     async def get_session_results(self, year: int, event: str, session: str) -> Dict:
@@ -77,12 +83,12 @@ class F1DataProvider:
             # Load the session
             race_session = fastf1.get_session(year, event, session)
             race_session.load()
-            
+
             # Get results and convert to a more readable format
             results = race_session.results
             if results is None or len(results) == 0:
                 raise ValueError("No results available for this session")
-            
+
             formatted_results = []
             for _, driver in results.iterrows():
                 # Handle fastest lap data safely
@@ -90,10 +96,11 @@ class F1DataProvider:
                 fastest_lap_time = None
                 if 'FastestLap' in driver and pd.notna(driver['FastestLap']):
                     is_fastest = True
-                    fastest_lap_time = str(driver['FastestLap']) if pd.notna(driver['FastestLap']) else None
+                    fastest_lap_time = str(driver['FastestLap']) if pd.notna(
+                        driver['FastestLap']) else None
                 elif 'BestLapTime' in driver and pd.notna(driver['BestLapTime']):
                     fastest_lap_time = str(driver['BestLapTime'])
-                
+
                 result = {
                     'position': int(driver['Position']) if pd.notna(driver['Position']) else None,
                     'driver_number': str(driver['DriverNumber']),
@@ -109,14 +116,15 @@ class F1DataProvider:
                     'gap_to_leader': str(driver['Time']) if pd.notna(driver['Time']) else None
                 }
                 formatted_results.append(result)
-            
+
             return {
                 'session': session,
                 'results': formatted_results
             }
         except Exception as e:
             self.logger.error(f"Error fetching session results: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Error fetching session results: {str(e)}")
+            raise HTTPException(
+                status_code=500, detail=f"Error fetching session results: {str(e)}")
 
     @cached(ttl=1800)
     async def get_driver_performance(self, year: int, event: str, driver: str) -> Dict:
@@ -125,12 +133,12 @@ class F1DataProvider:
             # Load the race session
             session = fastf1.get_session(year, event, 'Race')
             session.load()
-            
+
             # Get laps for the specific driver
             driver_laps = session.laps.pick_driver(driver)
             if driver_laps.empty:
                 raise ValueError(f"No lap data found for driver {driver}")
-            
+
             # Format lap data
             lap_data = []
             for idx, lap in driver_laps.iterrows():
@@ -145,7 +153,7 @@ class F1DataProvider:
                     'is_personal_best': bool(lap['IsPersonalBest']) if pd.notna(lap['IsPersonalBest']) else False
                 }
                 lap_data.append(lap_info)
-            
+
             return {
                 'driver': driver,
                 'total_laps': len(lap_data),
@@ -153,7 +161,8 @@ class F1DataProvider:
             }
         except Exception as e:
             self.logger.error(f"Error fetching driver performance: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Error fetching driver performance: {str(e)}")
+            raise HTTPException(
+                status_code=500, detail=f"Error fetching driver performance: {str(e)}")
 
     async def get_telemetry(self, year: int, event: str, driver: str, lap: int) -> Dict:
         """Get detailed telemetry data for a specific lap"""
@@ -161,21 +170,21 @@ class F1DataProvider:
             # Load the race session
             session = fastf1.get_session(year, event, 'Race')
             session.load()
-            
+
             # Get the specific lap's telemetry
             driver_laps = session.laps.pick_driver(driver)
             if driver_laps.empty:
                 raise ValueError(f"No lap data found for driver {driver}")
-            
+
             # Filter for the specific lap
             target_lap = driver_laps[driver_laps['LapNumber'] == lap]
             if target_lap.empty:
                 raise ValueError(f"Lap {lap} not found for driver {driver}")
-            
+
             # Get telemetry for the first matching lap
             target_lap = target_lap.iloc[0]
             telemetry = target_lap.get_telemetry()
-            
+
             # Format telemetry data
             telemetry_data = []
             for idx, data in telemetry.iterrows():
@@ -189,7 +198,7 @@ class F1DataProvider:
                     'drs': int(data['DRS']) if pd.notna(data['DRS']) else 0
                 }
                 telemetry_data.append(point)
-            
+
             return {
                 'driver': driver,
                 'lap_number': lap,
@@ -197,7 +206,8 @@ class F1DataProvider:
             }
         except Exception as e:
             self.logger.error(f"Error fetching telemetry: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Error fetching telemetry: {str(e)}")
+            raise HTTPException(
+                status_code=500, detail=f"Error fetching telemetry: {str(e)}")
 
     @cached(ttl=1800)
     async def compare_drivers(self, year: int, event: str, drivers: List[str]) -> Dict:
@@ -206,17 +216,18 @@ class F1DataProvider:
             # Load the race session
             session = fastf1.get_session(year, event, 'Race')
             session.load()
-            
+
             comparison_data = {}
             for driver in drivers:
                 driver_laps = session.laps.pick_driver(driver)
                 if len(driver_laps) == 0:
                     raise ValueError(f"No lap data found for driver {driver}")
-                
+
                 fastest_lap = driver_laps.pick_fastest()
                 if fastest_lap is None:
-                    raise ValueError(f"No fastest lap found for driver {driver}")
-                
+                    raise ValueError(
+                        f"No fastest lap found for driver {driver}")
+
                 comparison_data[driver] = {
                     'fastest_lap_time': str(fastest_lap['LapTime']) if pd.notna(fastest_lap['LapTime']) else None,
                     'fastest_lap_number': int(fastest_lap['LapNumber']) if pd.notna(fastest_lap['LapNumber']) else None,
@@ -225,11 +236,12 @@ class F1DataProvider:
                     'sector_3_time': str(fastest_lap['Sector3Time']) if pd.notna(fastest_lap['Sector3Time']) else None,
                     'speed_trap': float(fastest_lap['SpeedI2']) if pd.notna(fastest_lap['SpeedI2']) else None
                 }
-            
+
             return comparison_data
         except Exception as e:
             self.logger.error(f"Error comparing drivers: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Error comparing drivers: {str(e)}")
+            raise HTTPException(
+                status_code=500, detail=f"Error comparing drivers: {str(e)}")
 
     async def get_live_timing(self, session_id: str):
         """Get real-time session updates using SSE"""
@@ -244,7 +256,8 @@ class F1DataProvider:
                 await asyncio.sleep(1)
         except Exception as e:
             self.logger.error(f"Error in live timing stream: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Error in live timing stream: {str(e)}")
+            raise HTTPException(
+                status_code=500, detail=f"Error in live timing stream: {str(e)}")
 
     @cached(ttl=1800)
     async def get_weather_data(self, year: int, event: str) -> Dict:
@@ -253,10 +266,10 @@ class F1DataProvider:
             # Load the race session with weather data
             session = fastf1.get_session(year, event, 'Race')
             session.load()
-            
+
             if session.weather_data is None or session.weather_data.empty:
                 raise ValueError("No weather data available for this session")
-            
+
             weather_data = []
             for idx, data in session.weather_data.iterrows():
                 # Convert timestamp to string safely
@@ -268,7 +281,7 @@ class F1DataProvider:
                     time_str = datetime.fromtimestamp(timestamp).isoformat()
                 else:
                     time_str = str(timestamp)
-                
+
                 point = {
                     'time': time_str,
                     'air_temp': float(data['AirTemp']) if pd.notna(data['AirTemp']) else None,
@@ -279,14 +292,15 @@ class F1DataProvider:
                     'wind_direction': float(data['WindDirection']) if pd.notna(data['WindDirection']) else None
                 }
                 weather_data.append(point)
-            
+
             return {
                 'session': 'Race',
                 'weather_data': weather_data
             }
         except Exception as e:
             self.logger.error(f"Error fetching weather data: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Error fetching weather data: {str(e)}")
+            raise HTTPException(
+                status_code=500, detail=f"Error fetching weather data: {str(e)}")
 
     @cached(ttl=86400)  # Cache for 24 hours
     async def get_circuit_info(self, circuit_id: str) -> Dict:
@@ -308,7 +322,9 @@ class F1DataProvider:
             }
         except Exception as e:
             self.logger.error(f"Error fetching circuit info: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Error fetching circuit info: {str(e)}")
+            raise HTTPException(
+                status_code=500, detail=f"Error fetching circuit info: {str(e)}")
+
 
 # Initialize the data provider
 f1_provider = F1DataProvider()
@@ -324,6 +340,7 @@ get_live_timing = f1_provider.get_live_timing
 get_weather_data = f1_provider.get_weather_data
 get_circuit_info = f1_provider.get_circuit_info
 
+
 async def get_current_session() -> Dict[str, Any]:
     """Get information about the current or most recent F1 session"""
     try:
@@ -338,7 +355,7 @@ async def get_current_session() -> Dict[str, Any]:
             if session:
                 weather = fastf1.get_session_weather(session)
                 session_info['weather'] = weather
-            
+
             return {
                 "status": "success",
                 "data": session_info,
@@ -355,20 +372,24 @@ async def get_current_session() -> Dict[str, Any]:
             "message": str(e)
         }
 
+
 async def get_driver_standings(year: Optional[int] = None) -> Dict[str, Any]:
     """Get current driver championship standings"""
     try:
         if not year:
             year = datetime.now().year
-        
+
         session = fastf1.get_session(year, "last", "Race")
+        session.load(laps=True, telemetry=True, weather=True, messages=True)
+
         if session:
             standings = session.results
-            return {
-                "status": "success",
-                "data": standings.to_dict('records') if standings is not None else [],
-                "year": year
-            }
+            if standings is not None:
+                return {
+                    "status": "success",
+                    "data": standings.to_dict('records'),
+                    "year": year
+                }
         return {
             "status": "error",
             "message": f"No standings data found for year {year}"
@@ -380,13 +401,16 @@ async def get_driver_standings(year: Optional[int] = None) -> Dict[str, Any]:
             "message": str(e)
         }
 
+
 async def get_constructor_standings(year: Optional[int] = None) -> Dict[str, Any]:
     """Get current constructor championship standings"""
     try:
         if not year:
             year = datetime.now().year
-        
+
         session = fastf1.get_session(year, "last", "Race")
+        session.load(laps=True, telemetry=True, weather=True, messages=True)
+
         if session:
             standings = session.results
             if standings is not None:
@@ -395,8 +419,9 @@ async def get_constructor_standings(year: Optional[int] = None) -> Dict[str, Any
                 for result in standings.to_dict('records'):
                     team = result.get('Team', 'Unknown')
                     points = result.get('Points', 0)
-                    constructor_points[team] = constructor_points.get(team, 0) + points
-                
+                    constructor_points[team] = constructor_points.get(
+                        team, 0) + points
+
                 return {
                     "status": "success",
                     "data": [
@@ -419,6 +444,7 @@ async def get_constructor_standings(year: Optional[int] = None) -> Dict[str, Any
             "status": "error",
             "message": str(e)
         }
+
 
 async def get_race_results(year: int, grand_prix: str, session_type: str) -> Dict[str, Any]:
     """Get race results for a specific Grand Prix"""
@@ -446,6 +472,7 @@ async def get_race_results(year: int, grand_prix: str, session_type: str) -> Dic
             "message": str(e)
         }
 
+
 async def get_driver_info(driver_number: str, session_key: Optional[int] = None) -> Dict[str, Any]:
     """Get detailed information about a specific driver"""
     try:
@@ -453,7 +480,8 @@ async def get_driver_info(driver_number: str, session_key: Optional[int] = None)
         if session_key:
             driver_info = await openf1.get_driver_info(session_key)
             driver_data = next(
-                (d for d in driver_info if str(d.get('driver_number')) == driver_number),
+                (d for d in driver_info if str(
+                    d.get('driver_number')) == driver_number),
                 None
             )
             if driver_data:
@@ -462,7 +490,7 @@ async def get_driver_info(driver_number: str, session_key: Optional[int] = None)
                     "data": driver_data,
                     "source": "OpenF1"
                 }
-        
+
         # Fallback to historical data
         current_year = datetime.now().year
         session = fastf1.get_session(current_year, "last", "Race")
@@ -474,7 +502,7 @@ async def get_driver_info(driver_number: str, session_key: Optional[int] = None)
                     "data": driver_data,
                     "source": "FastF1"
                 }
-        
+
         return {
             "status": "error",
             "message": f"No driver information found for number {driver_number}"
@@ -486,6 +514,7 @@ async def get_driver_info(driver_number: str, session_key: Optional[int] = None)
             "message": str(e)
         }
 
+
 async def get_lap_times(session_key: int, driver_number: Optional[str] = None) -> Dict[str, Any]:
     """Get lap times for a specific session"""
     try:
@@ -495,7 +524,7 @@ async def get_lap_times(session_key: int, driver_number: Optional[str] = None) -
                 lap for lap in lap_times
                 if str(lap.get('driver_number')) == driver_number
             ]
-        
+
         return {
             "status": "success",
             "data": lap_times,
@@ -509,6 +538,7 @@ async def get_lap_times(session_key: int, driver_number: Optional[str] = None) -
             "message": str(e)
         }
 
+
 async def search_historical_data(
     query: str,
     year_from: Optional[int] = None,
@@ -521,7 +551,7 @@ async def search_historical_data(
             year_from = 1950
         if not year_to:
             year_to = datetime.now().year
-        
+
         results = []
         for year in range(year_from, year_to + 1):
             try:
@@ -534,7 +564,7 @@ async def search_historical_data(
                         data = session.weather_data
                     elif category == "telemetry":
                         data = session.laps
-                    
+
                     if data is not None:
                         # Convert to records and filter based on query
                         records = data.to_dict('records')
@@ -553,7 +583,7 @@ async def search_historical_data(
             except Exception as e:
                 logger.warning(f"Error searching year {year}: {str(e)}")
                 continue
-        
+
         return {
             "status": "success",
             "data": results,
@@ -566,4 +596,4 @@ async def search_historical_data(
         return {
             "status": "error",
             "message": str(e)
-        } 
+        }
