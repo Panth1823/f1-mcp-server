@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: f1-mcp-server
+    env: docker
+    region: singapore # Updated to match selected region
+    plan: free
+    healthCheckPath: /mcp/context
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: WORKERS
+        value: 1 # Free tier has limited resources
+      - key: LOG_LEVEL
+        value: info
+      - key: FASTF1_CACHE_DIR
+        value: /app/fastf1_cache
+      - key: CACHE_TTL
+        value: 3600
+      - key: ALLOWED_ORIGINS
+        value: '["https://f1-mcp-server.onrender.com"]'
+      - key: API_KEY
+        generateValue: true # Render will generate a secure random value
+      - key: RATE_LIMIT
+        value: 100

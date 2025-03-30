@@ -23,11 +23,19 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy project files
 COPY . .
 
+# Install the package in editable mode
+RUN pip install -e .
+
 # Create cache directory
 RUN mkdir -p /app/fastf1_cache
+
+# Create non-root user for security
+RUN adduser --disabled-password --gecos '' appuser
+RUN chown -R appuser:appuser /app
+USER appuser
 
 # Expose port
 EXPOSE 8000
 
 # Run the application
-CMD ["uvicorn", "f1_mcp_server.main:app", "--host", "0.0.0.0", "--port", "8000"] 
+CMD ["uvicorn", "f1_mcp_server.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"] 

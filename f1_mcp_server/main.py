@@ -233,7 +233,7 @@ async def handle_compare_drivers(request: CompareDriversRequest):
 
 @app.get("/mcp/function/get_live_timing")
 async def handle_get_live_timing(session_id: str):
-    return get_live_timing(session_id)
+    return await get_live_timing(session_id)
 
 @app.get("/mcp/function/get_weather_data")
 async def handle_get_weather_data(year: int, event: str):
@@ -241,19 +241,4 @@ async def handle_get_weather_data(year: int, event: str):
 
 @app.get("/mcp/function/get_circuit_info")
 async def handle_get_circuit_info(circuit_id: str):
-    return await get_circuit_info(circuit_id)
-
-if __name__ == "__main__":
-    import uvicorn
-    
-    # Get port from environment or use default
-    port = int(os.getenv("PORT", "8000"))
-    
-    # Run the server
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=port,
-        reload=True,
-        log_level="info"
-    )
+    return await get_circuit_info(circuit_id) 
