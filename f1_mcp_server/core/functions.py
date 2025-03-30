@@ -325,6 +325,163 @@ class F1DataProvider:
             raise HTTPException(
                 status_code=500, detail=f"Error fetching circuit info: {str(e)}")
 
+    @cached(ttl=3600)  # Cache for 1 hour
+    async def get_testing_session(self, year: int, test_number: int, session_number: int) -> Dict[str, Any]:
+        """Get information about F1 testing sessions"""
+        try:
+            # Get the testing event first
+            schedule = fastf1.get_event_schedule(year, include_testing=True)
+            testing_events = schedule[schedule['EventFormat'] == 'Testing']
+            
+            if testing_events.empty:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No testing events found for year {year}"
+                )
+            
+            # Get the specific testing event
+            test_event = testing_events.iloc[test_number - 1]
+            
+            # Get the specific session date based on session number
+            session_date = test_event.get(f'Session{session_number}Date')
+            if pd.isna(session_date):
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Session {session_number} not found for testing event {test_number}"
+                )
+            
+            return {
+                'year': year,
+                'test_number': test_number,
+                'session_number': session_number,
+                'event_name': test_event['EventName'],
+                'circuit': test_event['Location'],
+                'country': test_event['Country'],
+                'date': pd.to_datetime(session_date).isoformat(),
+                'session_name': f'Testing Day {session_number}',
+                'weather_data': {
+                    'air_temp': None,  # Weather data not available for testing sessions
+                    'track_temp': None,
+                    'humidity': None,
+                    'rainfall': None
+                }
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            self.logger.error(f"Error fetching testing session data: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error fetching testing session data: {str(e)}"
+            )
+
+    @cached(ttl=3600)  # Cache for 1 hour
+    async def get_testing_event(self, year: int, test_number: int) -> Dict[str, Any]:
+        """Get information about an F1 testing event"""
+        try:
+            # Get the testing events from the schedule
+            schedule = fastf1.get_event_schedule(year, include_testing=True)
+            testing_events = schedule[schedule['EventFormat'] == 'Testing']
+            
+            if testing_events.empty:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No testing events found for year {year}"
+                )
+            
+            if test_number > len(testing_events):
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Testing event {test_number} not found for year {year}"
+                )
+            
+            # Get the specific testing event
+            event = testing_events.iloc[test_number - 1]
+            
+            # Get all sessions for this testing event
+            sessions = []
+            for i in range(1, 6):  # Usually up to 5 possible sessions
+                session_date = event.get(f'Session{i}Date')
+                if pd.notna(session_date):
+                    sessions.append({
+                        'name': f'Testing Day {i}',
+                        'date': pd.to_datetime(session_date).isoformat(),
+                        'number': i
+                    })
+            
+            return {
+                'year': year,
+                'test_number': test_number,
+                'event_name': event['EventName'],
+                'circuit': event['Location'],
+                'country': event['Country'],
+                'location': event['Location'],
+                'date': pd.to_datetime(event['EventDate']).isoformat(),
+                'sessions': sessions
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            self.logger.error(f"Error fetching testing event data: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error fetching testing event data: {str(e)}"
+            )
+
+    @cached(ttl=1800)  # Cache for 30 minutes
+    async def get_events_remaining(self, include_testing: bool = True) -> Dict[str, Any]:
+        """Get information about remaining events in the season"""
+        try:
+            schedule = fastf1.get_event_schedule(datetime.now().year)
+            current_date = datetime.now()
+            
+            # Filter for remaining events
+            remaining_events = []
+            for _, event in schedule.iterrows():
+                event_date = pd.to_datetime(event['EventDate'])
+                if event_date > current_date:
+                    remaining_events.append({
+                        'name': event['EventName'],
+                        'circuit': event['Location'],
+                        'country': event['Country'],
+                        'location': event['Location'],
+                        'date': event_date.isoformat(),
+                        'round': event['RoundNumber'],
+                        'format': event['EventFormat'] if 'EventFormat' in event else 'Traditional',
+                        'sessions': [
+                            {
+                                'name': 'Practice 1',
+                                'date': pd.to_datetime(event['Session1Date']).isoformat() if pd.notna(event['Session1Date']) else None
+                            },
+                            {
+                                'name': 'Practice 2',
+                                'date': pd.to_datetime(event['Session2Date']).isoformat() if pd.notna(event['Session2Date']) else None
+                            },
+                            {
+                                'name': 'Practice 3',
+                                'date': pd.to_datetime(event['Session3Date']).isoformat() if pd.notna(event['Session3Date']) else None
+                            },
+                            {
+                                'name': 'Qualifying',
+                                'date': pd.to_datetime(event['Session4Date']).isoformat() if pd.notna(event['Session4Date']) else None
+                            },
+                            {
+                                'name': 'Sprint' if 'Sprint' in str(event.get('EventFormat', '')) else 'Race',
+                                'date': pd.to_datetime(event['Session5Date']).isoformat() if pd.notna(event['Session5Date']) else None
+                            }
+                        ]
+                    })
+            
+            return {
+                'remaining_events': remaining_events
+            }
+        except Exception as e:
+            self.logger.error(f"Error fetching remaining events: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error fetching remaining events: {str(e)}"
+            )
+
 
 # Initialize the data provider
 f1_provider = F1DataProvider()
@@ -339,6 +496,9 @@ compare_drivers = f1_provider.compare_drivers
 get_live_timing = f1_provider.get_live_timing
 get_weather_data = f1_provider.get_weather_data
 get_circuit_info = f1_provider.get_circuit_info
+get_testing_session = f1_provider.get_testing_session
+get_testing_event = f1_provider.get_testing_event
+get_events_remaining = f1_provider.get_events_remaining
 
 
 async def get_current_session() -> Dict[str, Any]:

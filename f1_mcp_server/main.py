@@ -118,6 +118,30 @@ F1_MCP_FUNCTIONS = [
         parameters={
             "circuit_id": {"type": "string", "description": "Circuit identifier"}
         }
+    ),
+    F1Function(
+        name="GET_TESTING_SESSION",
+        description="Get information about F1 testing sessions",
+        parameters={
+            "year": {"type": "integer", "description": "Championship year"},
+            "test_number": {"type": "integer", "description": "Number of the testing event (usually 1 or 2)"},
+            "session_number": {"type": "integer", "description": "Number of the session within the testing event (usually 1-3)"}
+        }
+    ),
+    F1Function(
+        name="GET_TESTING_EVENT",
+        description="Get information about an F1 testing event",
+        parameters={
+            "year": {"type": "integer", "description": "Championship year"},
+            "test_number": {"type": "integer", "description": "Number of the testing event (usually 1 or 2)"}
+        }
+    ),
+    F1Function(
+        name="GET_EVENTS_REMAINING",
+        description="Get information about remaining events in the season",
+        parameters={
+            "include_testing": {"type": "boolean", "description": "Whether to include testing sessions", "default": True}
+        }
     )
 ]
 
@@ -185,7 +209,10 @@ from f1_mcp_server.core.functions import (
     compare_drivers,
     get_live_timing,
     get_weather_data,
-    get_circuit_info
+    get_circuit_info,
+    get_testing_session,
+    get_testing_event,
+    get_events_remaining
 )
 
 # Request body models
@@ -241,4 +268,16 @@ async def handle_get_weather_data(year: int, event: str):
 
 @app.get("/mcp/function/get_circuit_info")
 async def handle_get_circuit_info(circuit_id: str):
-    return await get_circuit_info(circuit_id) 
+    return await get_circuit_info(circuit_id)
+
+@app.get("/mcp/function/get_testing_session")
+async def handle_get_testing_session(year: int, test_number: int, session_number: int):
+    return await get_testing_session(year, test_number, session_number)
+
+@app.get("/mcp/function/get_testing_event")
+async def handle_get_testing_event(year: int, test_number: int):
+    return await get_testing_event(year, test_number)
+
+@app.get("/mcp/function/get_events_remaining")
+async def handle_get_events_remaining(include_testing: bool = True):
+    return await get_events_remaining(include_testing) 
