@@ -4,6 +4,7 @@ from fastapi import FastAPI, HTTPException
 from typing import Dict, List, Optional
 from datetime import datetime
 from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
 
 # Configure logging
 logging.basicConfig(
@@ -12,10 +13,40 @@ logging.basicConfig(
 )
 
 # Load environment variables
-os.environ.setdefault('FASTF1_CACHE_DIR', 'fastf1_cache')
+os.environ.setdefault('FASTF1_CACHE_DIR', os.getenv('FASTF1_CACHE_DIR', 'fastf1_cache'))
+
+# Create cache directory if it doesn't exist
+os.makedirs(os.environ['FASTF1_CACHE_DIR'], exist_ok=True)
+
+# Import middleware
+from f1_mcp_server.middleware.cache import F1CacheMiddleware
+from f1_mcp_server.middleware.rate_limiter import RateLimitMiddleware
+from f1_mcp_server.middleware.error_handler import ErrorHandlerMiddleware
 
 # Create FastAPI app
-app = FastAPI()
+app = FastAPI(
+    title="Formula 1 MCP Server",
+    description="A Formula 1 Machine Communication Protocol Server",
+    version="1.0.0"
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # For development - restrict in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Add custom middleware
+app.add_middleware(ErrorHandlerMiddleware)
+app.add_middleware(F1CacheMiddleware)
+app.add_middleware(
+    RateLimitMiddleware,
+    rate_limit=int(os.getenv("RATE_LIMIT", "100")),
+    interval=int(os.getenv("RATE_LIMIT_INTERVAL", "60"))
+)
 
 # Define MCP function schemas
 class F1Function:
@@ -280,4 +311,4 @@ async def handle_get_testing_event(year: int, test_number: int):
 
 @app.get("/mcp/function/get_events_remaining")
 async def handle_get_events_remaining(include_testing: bool = True):
-    return await get_events_remaining(include_testing) 
+    return await get_events_remaining(include_testing)
