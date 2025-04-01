@@ -9,8 +9,8 @@ from starlette.status import HTTP_429_TOO_MANY_REQUESTS
 import os
 
 # Default rate limits
-RATE_LIMIT = int(os.getenv("RATE_LIMIT", "100"))  # Default requests per minute
-RATE_LIMIT_INTERVAL = int(os.getenv("RATE_LIMIT_INTERVAL", "60"))  # Default interval in seconds
+RATE_LIMIT = int(os.getenv("RATE_LIMIT", "1000"))  # Default requests per minute
+RATE_LIMIT_INTERVAL = int(os.getenv("RATE_LIMIT_INTERVAL", "20"))  # Default interval in seconds
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, rate_limit=RATE_LIMIT, interval=RATE_LIMIT_INTERVAL):
