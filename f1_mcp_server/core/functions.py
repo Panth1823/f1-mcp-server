@@ -13,6 +13,9 @@ from aiocache import cached
 import fastf1
 from datetime import datetime
 from .aggregator import DataAggregator
+from pydantic import BaseModel, validator, Field
+from enum import Enum
+from f1_mcp_server.data_models.schemas import PaginationParams, TelemetryResponse, TelemetryPoint
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -20,6 +23,49 @@ logger = logging.getLogger(__name__)
 
 # Initialize FastF1 cache
 fastf1.Cache.enable_cache('fastf1_cache')
+
+
+class SessionType(str, Enum):
+    FP1 = "FP1"
+    FP2 = "FP2"
+    FP3 = "FP3"
+    QUALIFYING = "Q"
+    SPRINT = "Sprint"
+    RACE = "Race"
+
+class SessionRequest(BaseModel):
+    year: int = Field(..., ge=1950, le=2100)
+    event: str
+    session: SessionType
+
+    @validator('event')
+    def validate_event(cls, v):
+        if not v.strip():
+            raise ValueError("Event identifier cannot be empty")
+        return v.strip()
+
+class TelemetryRequest(BaseModel):
+    year: int = Field(..., ge=1950, le=2100)
+    event: str
+    driver: str
+    lap: int = Field(..., ge=1)
+
+    @validator('driver')
+    def validate_driver(cls, v):
+        if not v.isalnum():
+            raise ValueError("Driver identifier must be alphanumeric")
+        return v.upper()
+
+class DriversComparisonRequest(BaseModel):
+    year: int = Field(..., ge=1950, le=2100)
+    event: str
+    drivers: List[str] = Field(..., min_items=2, max_items=5)
+
+    @validator('drivers')
+    def validate_drivers(cls, drivers):
+        if len(set(drivers)) != len(drivers):
+            raise ValueError("Driver list contains duplicates")
+        return [d.upper() for d in drivers if d.strip()]
 
 
 class F1DataProvider:
@@ -80,8 +126,11 @@ class F1DataProvider:
     async def get_session_results(self, year: int, event: str, session: str) -> Dict:
         """Get results for a specific session"""
         try:
+            # Validate inputs
+            request = SessionRequest(year=year, event=event, session=session)
+            
             # Load the session
-            race_session = fastf1.get_session(year, event, session)
+            race_session = fastf1.get_session(request.year, request.event, request.session)
             race_session.load()
 
             # Get results and convert to a more readable format
@@ -126,18 +175,38 @@ class F1DataProvider:
             raise HTTPException(
                 status_code=500, detail=f"Error fetching session results: {str(e)}")
 
-    @cached(ttl=1800)
+    class DriverPerformanceRequest(BaseModel):
+        year: int
+        event: str
+        driver: str
+
+        @validator('year')
+        def validate_year(cls, v):
+            if v < 1950 or v > 2100:
+                raise ValueError("Year must be between 1950 and 2100")
+            return v
+
+        @validator('driver')
+        def validate_driver(cls, v):
+            if not v.isalnum():
+                raise ValueError("Driver identifier must be alphanumeric")
+            return v
+
+    @cached(ttl=1800)  # Cache for 30 minutes
     async def get_driver_performance(self, year: int, event: str, driver: str) -> Dict:
         """Get detailed performance data for a specific driver"""
         try:
+            # Validate inputs
+            request_data = self.DriverPerformanceRequest(year=year, event=event, driver=driver)
+
             # Load the race session
-            session = fastf1.get_session(year, event, 'Race')
+            session = fastf1.get_session(request_data.year, request_data.event, 'Race')
             session.load()
 
             # Get laps for the specific driver
-            driver_laps = session.laps.pick_driver(driver)
+            driver_laps = session.laps.pick_driver(request_data.driver)
             if driver_laps.empty:
-                raise ValueError(f"No lap data found for driver {driver}")
+                raise ValueError(f"No lap data found for driver {request_data.driver}")
 
             # Format lap data
             lap_data = []
@@ -155,70 +224,96 @@ class F1DataProvider:
                 lap_data.append(lap_info)
 
             return {
-                'driver': driver,
+                'driver': request_data.driver,
                 'total_laps': len(lap_data),
                 'lap_data': lap_data
             }
+        except ValueError as ve:
+            self.logger.error(f"Validation error: {str(ve)}")
+            raise HTTPException(status_code=400, detail=str(ve))
         except Exception as e:
-            self.logger.error(f"Error fetching driver performance: {str(e)}")
-            raise HTTPException(
-                status_code=500, detail=f"Error fetching driver performance: {str(e)}")
+            self.logger.error(f"Unexpected error in get_driver_performance: {str(e)}")
+            raise HTTPException(status_code=500, detail="Internal server error")
 
-    async def get_telemetry(self, year: int, event: str, driver: str, lap: int) -> Dict:
-        """Get detailed telemetry data for a specific lap"""
+    async def get_telemetry(self, year: int, event: str, driver: str, lap: int, 
+                           pagination: Optional[PaginationParams] = None) -> Dict:
+        """Get detailed telemetry data for a specific lap with pagination support"""
         try:
+            # Validate inputs
+            request = TelemetryRequest(year=year, event=event, driver=driver, lap=lap)
+            pagination = pagination or PaginationParams()
+                
             # Load the race session
-            session = fastf1.get_session(year, event, 'Race')
+            session = fastf1.get_session(request.year, request.event, 'Race')
             session.load()
 
             # Get the specific lap's telemetry
-            driver_laps = session.laps.pick_driver(driver)
+            driver_laps = session.laps.pick_driver(request.driver)
             if driver_laps.empty:
-                raise ValueError(f"No lap data found for driver {driver}")
+                raise ValueError(f"No lap data found for driver {request.driver}")
 
             # Filter for the specific lap
-            target_lap = driver_laps[driver_laps['LapNumber'] == lap]
+            target_lap = driver_laps[driver_laps['LapNumber'] == request.lap]
             if target_lap.empty:
-                raise ValueError(f"Lap {lap} not found for driver {driver}")
+                raise ValueError(f"Lap {request.lap} not found for driver {request.driver}")
 
             # Get telemetry for the first matching lap
             target_lap = target_lap.iloc[0]
             telemetry = target_lap.get_telemetry()
 
             # Format telemetry data
-            telemetry_data = []
+            telemetry_points = []
             for idx, data in telemetry.iterrows():
+                # Convert the time index to proper ISO format
+                time_str = pd.Timestamp(data.name).isoformat() if isinstance(data.name, (pd.Timestamp, datetime)) else datetime.fromtimestamp(0).isoformat()
+                
                 point = {
-                    'time': data.index.isoformat() if hasattr(data.index, 'isoformat') else str(data.index),
-                    'speed': float(data['Speed']) if pd.notna(data['Speed']) else None,
-                    'throttle': float(data['Throttle']) if pd.notna(data['Throttle']) else None,
-                    'brake': bool(data['Brake']) if pd.notna(data['Brake']) else None,
-                    'gear': int(data['nGear']) if pd.notna(data['nGear']) else None,
-                    'rpm': float(data['RPM']) if pd.notna(data['RPM']) else None,
-                    'drs': int(data['DRS']) if pd.notna(data['DRS']) else 0
+                    "time": time_str,
+                    "speed": float(data['Speed']) if pd.notna(data['Speed']) else 0.0,
+                    "throttle": float(data['Throttle']) if pd.notna(data['Throttle']) else 0.0,
+                    "brake": bool(data['Brake']) if pd.notna(data['Brake']) else False,
+                    "gear": int(data['nGear']) if pd.notna(data['nGear']) else 0,
+                    "rpm": float(data['RPM']) if pd.notna(data['RPM']) else 0.0,
+                    "drs": int(data['DRS']) if pd.notna(data['DRS']) else 0
                 }
-                telemetry_data.append(point)
+                telemetry_points.append(point)
+
+            # Apply pagination
+            total_items = len(telemetry_points)
+            total_pages = (total_items + pagination.page_size - 1) // pagination.page_size
+            start_idx = (pagination.page - 1) * pagination.page_size
+            end_idx = start_idx + pagination.page_size
+            paginated_points = telemetry_points[start_idx:end_idx]
 
             return {
-                'driver': driver,
-                'lap_number': lap,
-                'telemetry': telemetry_data
+                "driver": request.driver,
+                "lap_number": request.lap,
+                "telemetry": paginated_points,
+                "page": pagination.page,
+                "page_size": pagination.page_size,
+                "total_items": total_items,
+                "total_pages": total_pages
             }
+        except ValueError as ve:
+            self.logger.error(f"Validation error in get_telemetry: {str(ve)}")
+            raise HTTPException(status_code=400, detail=str(ve))
         except Exception as e:
             self.logger.error(f"Error fetching telemetry: {str(e)}")
-            raise HTTPException(
-                status_code=500, detail=f"Error fetching telemetry: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Error fetching telemetry: {str(e)}")
 
     @cached(ttl=1800)
     async def compare_drivers(self, year: int, event: str, drivers: List[str]) -> Dict:
         """Compare performance between multiple drivers"""
         try:
+            # Validate inputs
+            request = DriversComparisonRequest(year=year, event=event, drivers=drivers)
+            
             # Load the race session
-            session = fastf1.get_session(year, event, 'Race')
+            session = fastf1.get_session(request.year, request.event, 'Race')
             session.load()
 
             comparison_data = {}
-            for driver in drivers:
+            for driver in request.drivers:
                 driver_laps = session.laps.pick_driver(driver)
                 if len(driver_laps) == 0:
                     raise ValueError(f"No lap data found for driver {driver}")
