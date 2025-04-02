@@ -44,7 +44,7 @@ app.add_middleware(ErrorHandlerMiddleware)
 app.add_middleware(F1CacheMiddleware)
 app.add_middleware(
     RateLimitMiddleware,
-    rate_limit=int(os.getenv("RATE_LIMIT", "100")),
+    rate_limit=int(os.getenv("RATE_LIMIT", "5000")),  # Increased from 100 to 5000
     interval=int(os.getenv("RATE_LIMIT_INTERVAL", "60"))
 )
 
