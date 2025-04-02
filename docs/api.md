@@ -26,14 +26,6 @@ GET /mcp/context
 
 Returns information about the MCP server's capabilities and available functions.
 
-### Get Current Session
-
-```http
-GET /mcp/function/get_current_session
-```
-
-Returns information about the current or most recent F1 session.
-
 ### Get Driver Standings
 
 ```http

@@ -16,6 +16,8 @@ from .aggregator import DataAggregator
 from pydantic import BaseModel, validator, Field
 from enum import Enum
 from f1_mcp_server.data_models.schemas import PaginationParams, TelemetryResponse, TelemetryPoint
+import json
+from json import JSONEncoder
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -79,11 +81,43 @@ class F1DataProvider:
     async def get_race_calendar(self, year: int) -> Dict:
         """Get F1 season schedule"""
         try:
+            # Get the schedule
             schedule = fastf1.get_event_schedule(year)
-            if schedule is None:
+            if schedule is None or schedule.empty:
                 raise HTTPException(
                     status_code=404, detail=f"No schedule found for year {year}")
-            return schedule.to_dict(orient='records')
+
+            # Convert to a more readable format
+            calendar = []
+            for _, event in schedule.iterrows():
+                calendar_entry = {
+                    'round': int(event['RoundNumber']) if pd.notna(event['RoundNumber']) else None,
+                    'event_name': event['EventName'],
+                    'circuit': event['Location'],
+                    'country': event['Country'],
+                    'date': pd.to_datetime(event['EventDate']).isoformat() if pd.notna(event['EventDate']) else None,
+                    'sessions': []
+                }
+
+                # Add all available sessions
+                for i in range(1, 6):
+                    session_date = event.get(f'Session{i}Date')
+                    session_name = event.get(f'Session{i}')
+                    if pd.notna(session_date) and session_name:
+                        calendar_entry['sessions'].append({
+                            'name': session_name,
+                            'date': pd.to_datetime(session_date).isoformat()
+                        })
+
+                calendar.append(calendar_entry)
+
+            return {
+                'status': 'success',
+                'year': year,
+                'calendar': calendar
+            }
+        except HTTPException:
+            raise
         except Exception as e:
             self.logger.error(f"Error fetching race calendar: {str(e)}")
             raise HTTPException(
@@ -93,28 +127,58 @@ class F1DataProvider:
     async def get_event_details(self, year: int, event_identifier: str) -> Dict:
         """Get detailed information about a specific Grand Prix"""
         try:
+            # Get the schedule
             schedule = fastf1.get_event_schedule(year)
-            if schedule is None:
+            if schedule is None or schedule.empty:
                 raise HTTPException(
                     status_code=404, detail=f"No schedule found for year {year}")
 
-            event = schedule[schedule['EventName'].str.contains(event_identifier, case=False) |
-                             schedule['Location'].str.contains(event_identifier, case=False)].iloc[0]
-            if event.empty:
-                raise HTTPException(
-                    status_code=404, detail=f"Event {event_identifier} not found in {year} schedule")
+            # Normalize the event identifier
+            event_identifier = event_identifier.lower().strip()
 
-            return {
-                "event_name": event['EventName'],
-                "circuit_name": event['Location'],
-                "country": event['Country'],
-                "location": event['Location'],
-                "date": event['EventDate'],
-                "first_practice": event.get('Session1Date'),
-                "qualifying": event.get('Session4Date'),
-                "sprint": event.get('Session5Date'),
-                "race": event.get('Session5Date') if 'Sprint' in event.get('Session4', '') else event.get('Session4Date')
+            # Try to find the event by various fields
+            event = None
+            for _, row in schedule.iterrows():
+                if (event_identifier in row['EventName'].lower() or
+                    event_identifier in row['Location'].lower() or
+                    event_identifier in row['Country'].lower()):
+                    event = row
+                    break
+
+            if event is None:
+                raise HTTPException(
+                    status_code=404, detail=f"Event '{event_identifier}' not found in {year} schedule")
+
+            # Format dates
+            def format_date(date_str):
+                if pd.isna(date_str):
+                    return None
+                return pd.to_datetime(date_str).isoformat()
+
+            # Build the response
+            response = {
+                'status': 'success',
+                'event_name': event['EventName'],
+                'circuit_name': event['Location'],
+                'country': event['Country'],
+                'location': event['Location'],
+                'round': int(event['RoundNumber']) if pd.notna(event['RoundNumber']) else None,
+                'date': format_date(event['EventDate']),
+                'sessions': []
             }
+
+            # Add all available sessions
+            for i in range(1, 6):
+                session_date = event.get(f'Session{i}Date')
+                session_name = event.get(f'Session{i}')
+                if pd.notna(session_date) and session_name:
+                    response['sessions'].append({
+                        'name': session_name,
+                        'date': format_date(session_date)
+                    })
+
+            return response
+
         except HTTPException:
             raise
         except Exception as e:
@@ -129,9 +193,9 @@ class F1DataProvider:
             # Validate inputs
             request = SessionRequest(year=year, event=event, session=session)
             
-            # Load the session
+            # Load the session with all necessary data
             race_session = fastf1.get_session(request.year, request.event, request.session)
-            race_session.load()
+            race_session.load(laps=True, telemetry=True, weather=True, messages=True)
 
             # Get results and convert to a more readable format
             results = race_session.results
@@ -150,6 +214,20 @@ class F1DataProvider:
                 elif 'BestLapTime' in driver and pd.notna(driver['BestLapTime']):
                     fastest_lap_time = str(driver['BestLapTime'])
 
+                # Get driver's best lap
+                driver_laps = race_session.laps.pick_driver(driver['DriverNumber'])
+                best_lap = None
+                if not driver_laps.empty:
+                    best_lap = driver_laps.pick_fastest()
+                    if best_lap is not None:
+                        best_lap = {
+                            'lap_number': int(best_lap['LapNumber']),
+                            'lap_time': str(best_lap['LapTime']),
+                            'sector_1_time': str(best_lap['Sector1Time']) if pd.notna(best_lap['Sector1Time']) else None,
+                            'sector_2_time': str(best_lap['Sector2Time']) if pd.notna(best_lap['Sector2Time']) else None,
+                            'sector_3_time': str(best_lap['Sector3Time']) if pd.notna(best_lap['Sector3Time']) else None
+                        }
+
                 result = {
                     'position': int(driver['Position']) if pd.notna(driver['Position']) else None,
                     'driver_number': str(driver['DriverNumber']),
@@ -162,14 +240,23 @@ class F1DataProvider:
                     'time': str(driver['Time']) if pd.notna(driver['Time']) else None,
                     'fastest_lap': is_fastest,
                     'fastest_lap_time': fastest_lap_time,
-                    'gap_to_leader': str(driver['Time']) if pd.notna(driver['Time']) else None
+                    'gap_to_leader': str(driver['Time']) if pd.notna(driver['Time']) else None,
+                    'best_lap': best_lap,
+                    'total_laps': int(driver['TotalLaps']) if pd.notna(driver['TotalLaps']) else None
                 }
                 formatted_results.append(result)
 
             return {
+                'status': 'success',
                 'session': session,
-                'results': formatted_results
+                'event': event,
+                'year': year,
+                'results': formatted_results,
+                'total_drivers': len(formatted_results)
             }
+        except ValueError as ve:
+            self.logger.error(f"Validation error in get_session_results: {str(ve)}")
+            raise HTTPException(status_code=400, detail=str(ve))
         except Exception as e:
             self.logger.error(f"Error fetching session results: {str(e)}")
             raise HTTPException(
@@ -401,20 +488,64 @@ class F1DataProvider:
     async def get_circuit_info(self, circuit_id: str) -> Dict:
         """Get detailed information about a specific circuit"""
         try:
-            # This would typically come from a database or external API
-            # For now, returning mock data
+            # Get current year's schedule to find the circuit
+            current_year = datetime.now().year
+            schedule = fastf1.get_event_schedule(current_year)
+            
+            if schedule is None or schedule.empty:
+                raise HTTPException(
+                    status_code=404, detail="Could not fetch circuit information")
+
+            # Find the circuit in the schedule
+            circuit = None
+            for _, event in schedule.iterrows():
+                if circuit_id.lower() in event['Location'].lower():
+                    circuit = event
+                    break
+
+            if circuit is None:
+                raise HTTPException(
+                    status_code=404, detail=f"Circuit '{circuit_id}' not found")
+
+            # Get the most recent race session for this circuit
+            session = fastf1.get_session(current_year, circuit['EventName'], 'Race')
+            session.load()
+
+            # Get circuit length and other details
+            circuit_length = None
+            if hasattr(session, 'track_length'):
+                circuit_length = float(session.track_length)
+
+            # Get DRS zones
+            drs_zones = 0
+            if hasattr(session, 'drs_zones'):
+                drs_zones = len(session.drs_zones)
+
+            # Get lap record if available
+            lap_record = None
+            if hasattr(session, 'laps') and not session.laps.empty:
+                fastest_lap = session.laps.pick_fastest()
+                if fastest_lap is not None:
+                    lap_record = {
+                        'time': str(fastest_lap['LapTime']),
+                        'driver': f"{fastest_lap['Driver']}",
+                        'year': current_year
+                    }
+
             return {
-                "circuit_id": circuit_id,
-                "name": "Circuit Name",
-                "length": 5.513,  # km
-                "turns": 16,
-                "drs_zones": 2,
-                "lap_record": {
-                    "time": "1:31.447",
-                    "driver": "Max Verstappen",
-                    "year": 2023
-                }
+                'status': 'success',
+                'circuit_id': circuit_id,
+                'name': circuit['Location'],
+                'country': circuit['Country'],
+                'length': circuit_length,  # km
+                'turns': None,  # Not available in FastF1
+                'drs_zones': drs_zones,
+                'lap_record': lap_record,
+                'first_grand_prix': None,  # Not available in FastF1
+                'last_grand_prix': current_year
             }
+        except HTTPException:
+            raise
         except Exception as e:
             self.logger.error(f"Error fetching circuit info: {str(e)}")
             raise HTTPException(
@@ -596,100 +727,6 @@ get_testing_event = f1_provider.get_testing_event
 get_events_remaining = f1_provider.get_events_remaining
 
 
-async def get_current_session() -> Dict[str, Any]:
-    """Get information about the current or most recent F1 session"""
-    try:
-        current_year = datetime.now().year
-        schedule = fastf1.get_event_schedule(current_year)
-        
-        if schedule is None or schedule.empty:
-            return {
-                "status": "error",
-                "message": "No schedule found for current year"
-            }
-        
-        # Get the most recent event
-        current_date = pd.Timestamp.now().tz_localize('UTC')
-        
-        # Convert event dates to timestamps with UTC timezone
-        schedule['EventDate'] = pd.to_datetime(schedule['EventDate']).apply(
-            lambda x: x.tz_localize('UTC') if x.tzinfo is None else x.tz_convert('UTC')
-        )
-        recent_events = schedule[schedule['EventDate'] <= current_date]
-        
-        if recent_events.empty:
-            return {
-                "status": "error",
-                "message": "No recent events found"
-            }
-        
-        # Get the most recent event
-        latest_event = recent_events.iloc[-1]
-        
-        # Convert session dates to timestamps
-        def safe_convert_timestamp(date_str):
-            if pd.isna(date_str):
-                return None
-            try:
-                ts = pd.to_datetime(date_str)
-                return ts.tz_localize('UTC') if ts.tzinfo is None else ts.tz_convert('UTC')
-            except:
-                return None
-        
-        session_dates = [
-            safe_convert_timestamp(latest_event['Session1Date']),
-            safe_convert_timestamp(latest_event['Session2Date']),
-            safe_convert_timestamp(latest_event['Session3Date']),
-            safe_convert_timestamp(latest_event['Session4Date']),
-            safe_convert_timestamp(latest_event['Session5Date'])
-        ]
-        
-        # Filter out None/NaT values and get the most recent
-        valid_dates = [d for d in session_dates if d is not None and d <= current_date]
-        if not valid_dates:
-            return {
-                "status": "error",
-                "message": "No recent sessions found"
-            }
-        
-        latest_session_date = max(valid_dates)
-        session_number = session_dates.index(latest_session_date) + 1
-        
-        # Get session details
-        session = fastf1.get_session(current_year, latest_event['EventName'], session_number)
-        if session:
-            session.load()
-            
-            return {
-                "status": "success",
-                "data": {
-                    "year": current_year,
-                    "event_name": latest_event['EventName'],
-                    "session_name": f"Session {session_number}",
-                    "date": latest_session_date.isoformat(),
-                    "circuit": latest_event['Location'],
-                    "country": latest_event['Country'],
-                    "weather": {
-                        'air_temp': float(session.weather_data['AirTemp'].mean()) if session.weather_data is not None and 'AirTemp' in session.weather_data else None,
-                        'track_temp': float(session.weather_data['TrackTemp'].mean()) if session.weather_data is not None and 'TrackTemp' in session.weather_data else None,
-                        'humidity': float(session.weather_data['Humidity'].mean()) if session.weather_data is not None and 'Humidity' in session.weather_data else None
-                    } if session.weather_data is not None else None
-                },
-                "source": "FastF1"
-            }
-            
-        return {
-            "status": "error",
-            "message": "Could not load session data"
-        }
-    except Exception as e:
-        logger.error(f"Error in get_current_session: {str(e)}")
-        return {
-            "status": "error",
-            "message": str(e)
-        }
-
-
 async def get_driver_standings(year: Optional[int] = None) -> Dict[str, Any]:
     """Get current driver championship standings"""
     try:
@@ -719,47 +756,88 @@ async def get_driver_standings(year: Optional[int] = None) -> Dict[str, Any]:
         }
 
 
+class CustomJSONEncoder(JSONEncoder):
+    """Custom JSON encoder that handles special types."""
+    def default(self, obj):
+        # Convert numpy types to Python standard types
+        if hasattr(obj, "dtype") and hasattr(obj, "item"):
+            return obj.item()
+        # Convert sets to lists
+        if isinstance(obj, set):
+            return list(obj)
+        # Convert other non-serializable types to strings
+        try:
+            return JSONEncoder.default(self, obj)
+        except TypeError:
+            return str(obj)
+
+def safe_serialize(data):
+    """Safely serialize data to JSON string, handling special types."""
+    return json.dumps(data, cls=CustomJSONEncoder)
+
 async def get_constructor_standings(year: Optional[int] = None) -> Dict[str, Any]:
-    """Get current constructor championship standings"""
+    """Get constructor championship standings"""
     try:
         if not year:
             year = datetime.now().year
 
+        # Get the most recent race session
         session = fastf1.get_session(year, "last", "Race")
-        session.load(laps=True, telemetry=True, weather=True, messages=True)
+        session.load()
 
-        if session:
-            standings = session.results
-            if standings is not None:
-                # Aggregate by constructor
-                constructor_points = {}
-                for result in standings.to_dict('records'):
-                    team = result.get('Team', 'Unknown')
-                    points = result.get('Points', 0)
-                    constructor_points[team] = constructor_points.get(
-                        team, 0) + points
+        if session and session.results is not None:
+            # Group results by constructor and calculate points
+            constructor_points = {}
+            for _, result in session.results.iterrows():
+                constructor = result['TeamName']
+                points = float(result['Points']) if pd.notna(result['Points']) else 0
+                if constructor not in constructor_points:
+                    constructor_points[constructor] = {
+                        'points': 0,
+                        'wins': 0,
+                        'nationality': result.get('TeamNationality', 'Unknown'),
+                        'constructor_id': constructor.lower().replace(' ', '_')
+                    }
+                constructor_points[constructor]['points'] += points
+                if points > 0 and result['Position'] == 1:
+                    constructor_points[constructor]['wins'] += 1
 
-                return {
-                    "status": "success",
-                    "data": [
-                        {"team": team, "points": points}
-                        for team, points in sorted(
-                            constructor_points.items(),
-                            key=lambda x: x[1],
-                            reverse=True
-                        )
-                    ],
-                    "year": year
-                }
+            # Convert to list and sort by points
+            standings = []
+            for constructor, data in constructor_points.items():
+                standings.append({
+                    'position': len([s for s in standings if s['points'] > data['points']]) + 1,
+                    'team': constructor,
+                    'points': data['points'],
+                    'wins': data['wins'],
+                    'nationality': data['nationality'],
+                    'constructor_id': data['constructor_id']
+                })
+
+            standings.sort(key=lambda x: (-x['points'], -x['wins']))
+
+            return {
+                "status": "success",
+                "data": standings,
+                "year": year,
+                "total_teams": len(standings),
+                "round": str(session.event['RoundNumber']),
+                "season": str(year)
+            }
+
         return {
             "status": "error",
-            "message": f"No standings data found for year {year}"
+            "message": f"No standings data found for year {year}",
+            "data": [],
+            "year": year
         }
     except Exception as e:
         logger.error(f"Error in get_constructor_standings: {str(e)}")
         return {
             "status": "error",
-            "message": str(e)
+            "message": str(e),
+            "data": [],
+            "year": year
         }
 
 

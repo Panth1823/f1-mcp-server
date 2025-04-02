@@ -58,11 +58,6 @@ class F1Function:
 # Define available MCP functions
 F1_MCP_FUNCTIONS = [
     F1Function(
-        name="GET_CURRENT_SESSION",
-        description="Get information about the current or most recent F1 session",
-        parameters={}
-    ),
-    F1Function(
         name="GET_DRIVER_STANDINGS",
         description="Get current driver championship standings",
         parameters={
@@ -229,7 +224,6 @@ async def get_mcp_functions():
 
 # Import function implementations
 from f1_mcp_server.core.functions import (
-    get_current_session,
     get_driver_standings,
     get_constructor_standings,
     get_race_calendar,
@@ -253,10 +247,6 @@ class CompareDriversRequest(BaseModel):
     drivers: List[str]
 
 # Function endpoints
-@app.get("/mcp/function/get_current_session")
-async def handle_get_current_session():
-    return await get_current_session()
-
 @app.get("/mcp/function/get_driver_standings")
 async def handle_get_driver_standings(year: Optional[int] = None):
     return await get_driver_standings(year)
