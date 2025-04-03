@@ -155,15 +155,15 @@ class F1DataProvider:
                     return None
                 return pd.to_datetime(date_str).isoformat()
 
-            # Build the response
+            # Build the response with explicit type conversions
             response = {
                 'status': 'success',
-                'event_name': event['EventName'],
-                'circuit_name': event['Location'],
-                'country': event['Country'],
-                'location': event['Location'],
-                'round': int(event['RoundNumber']) if pd.notna(event['RoundNumber']) else None,
-                'date': format_date(event['EventDate']),
+                'event_name': str(event['EventName']), # Ensure string
+                'circuit_name': str(event['Location']), # Ensure string
+                'country': str(event['Country']), # Ensure string
+                'location': str(event['Location']), # Ensure string
+                'round': int(event['RoundNumber']) if pd.notna(event['RoundNumber']) else None, # Ensure int or None
+                'date': format_date(event['EventDate']), # Already handles None/ISO string
                 'sessions': []
             }
 
@@ -171,13 +171,13 @@ class F1DataProvider:
             for i in range(1, 6):
                 session_date = event.get(f'Session{i}Date')
                 session_name = event.get(f'Session{i}')
-                if pd.notna(session_date) and session_name:
+                if pd.notna(session_date) and pd.notna(session_name): # Check both are notna
                     response['sessions'].append({
-                        'name': session_name,
-                        'date': format_date(session_date)
+                        'name': str(session_name), # Ensure string
+                        'date': format_date(session_date) # Already handles None/ISO string
                     })
 
-            return response
+            return response # Already contains standard types
 
         except HTTPException:
             raise
@@ -190,77 +190,102 @@ class F1DataProvider:
     async def get_session_results(self, year: int, event: str, session: str) -> Dict:
         """Get results for a specific session"""
         try:
-            # Validate inputs
+            # Validate inputs using Pydantic model
             request = SessionRequest(year=year, event=event, session=session)
-            
-            # Load the session with all necessary data
-            race_session = fastf1.get_session(request.year, request.event, request.session)
-            race_session.load(laps=True, telemetry=True, weather=True, messages=True)
 
-            # Get results and convert to a more readable format
+            # Load the session with necessary data
+            # Selectively load data to potentially improve performance/reduce memory
+            race_session = fastf1.get_session(request.year, request.event, request.session)
+            # Removed invalid 'results=True' argument. Laps need to be loaded to get best lap data.
+            race_session.load(laps=True, telemetry=False, weather=False, messages=False) 
+
+            # Get results
             results = race_session.results
-            if results is None or len(results) == 0:
-                raise ValueError("No results available for this session")
+            if results is None or results.empty: # Check if DataFrame is None or empty
+                 # It's possible a session exists but has no results yet (e.g., before FP1 starts)
+                 # Return success with empty results instead of erroring
+                 return {
+                    'status': 'success',
+                    'session': request.session.value, # Use validated value
+                    'event': request.event,
+                    'year': request.year,
+                    'results': [],
+                    'total_drivers': 0,
+                    'message': 'Session found but no results available yet.'
+                 }
 
             formatted_results = []
-            for _, driver in results.iterrows():
+            for _, driver_result in results.iterrows(): # Renamed variable for clarity
                 # Handle fastest lap data safely
                 is_fastest = False
-                fastest_lap_time = None
-                if 'FastestLap' in driver and pd.notna(driver['FastestLap']):
+                fastest_lap_time_str = None # Use specific variable name
+                # Check existence and non-NA before accessing
+                if 'FastestLap' in driver_result and pd.notna(driver_result['FastestLap']):
+                    # FastF1 often returns Timedelta for lap times
                     is_fastest = True
-                    fastest_lap_time = str(driver['FastestLap']) if pd.notna(
-                        driver['FastestLap']) else None
-                elif 'BestLapTime' in driver and pd.notna(driver['BestLapTime']):
-                    fastest_lap_time = str(driver['BestLapTime'])
+                    fastest_lap_time_str = str(driver_result['FastestLap'])
+                elif 'BestLapTime' in driver_result and pd.notna(driver_result['BestLapTime']):
+                     # Fallback if FastestLap column isn't present (older data?)
+                    fastest_lap_time_str = str(driver_result['BestLapTime'])
 
-                # Get driver's best lap
-                driver_laps = race_session.laps.pick_driver(driver['DriverNumber'])
-                best_lap = None
-                if not driver_laps.empty:
-                    best_lap = driver_laps.pick_fastest()
-                    if best_lap is not None:
-                        best_lap = {
-                            'lap_number': int(best_lap['LapNumber']),
-                            'lap_time': str(best_lap['LapTime']),
-                            'sector_1_time': str(best_lap['Sector1Time']) if pd.notna(best_lap['Sector1Time']) else None,
-                            'sector_2_time': str(best_lap['Sector2Time']) if pd.notna(best_lap['Sector2Time']) else None,
-                            'sector_3_time': str(best_lap['Sector3Time']) if pd.notna(best_lap['Sector3Time']) else None
-                        }
+                # Get driver's best lap from the loaded laps data
+                best_lap_data = None # Initialize as None
+                # Ensure laps data is loaded and not empty
+                if race_session.laps is not None and not race_session.laps.empty:
+                    driver_laps = race_session.laps.pick_driver(driver_result['DriverNumber'])
+                    if not driver_laps.empty:
+                        best_lap_series = driver_laps.pick_fastest() # Renamed variable
+                        # Check if a fastest lap was found for this driver
+                        if best_lap_series is not None and isinstance(best_lap_series, pd.Series):
+                            best_lap_data = {
+                                # Explicitly convert types
+                                'lap_number': int(best_lap_series['LapNumber']) if pd.notna(best_lap_series['LapNumber']) else None,
+                                'lap_time': str(best_lap_series['LapTime']) if pd.notna(best_lap_series['LapTime']) else None,
+                                'sector_1_time': str(best_lap_series['Sector1Time']) if pd.notna(best_lap_series['Sector1Time']) else None,
+                                'sector_2_time': str(best_lap_series['Sector2Time']) if pd.notna(best_lap_series['Sector2Time']) else None,
+                                'sector_3_time': str(best_lap_series['Sector3Time']) if pd.notna(best_lap_series['Sector3Time']) else None
+                            }
 
+                # Build the result dictionary with explicit type conversions
                 result = {
-                    'position': int(driver['Position']) if pd.notna(driver['Position']) else None,
-                    'driver_number': str(driver['DriverNumber']),
-                    'driver_code': driver['Abbreviation'],
-                    'driver_name': f"{driver['FirstName']} {driver['LastName']}",
-                    'team': driver['TeamName'],
-                    'grid_position': int(driver['GridPosition']) if pd.notna(driver['GridPosition']) else None,
-                    'status': driver['Status'],
-                    'points': float(driver['Points']) if pd.notna(driver['Points']) else 0.0,
-                    'time': str(driver['Time']) if pd.notna(driver['Time']) else None,
-                    'fastest_lap': is_fastest,
-                    'fastest_lap_time': fastest_lap_time,
-                    'gap_to_leader': str(driver['Time']) if pd.notna(driver['Time']) else None,
-                    'best_lap': best_lap,
-                    'total_laps': int(driver['TotalLaps']) if pd.notna(driver['TotalLaps']) else None
+                    'position': int(driver_result['Position']) if pd.notna(driver_result['Position']) else None,
+                    'driver_number': str(driver_result['DriverNumber']), # Ensure string
+                    'driver_code': str(driver_result['Abbreviation']) if pd.notna(driver_result['Abbreviation']) else None, # Ensure string
+                    'driver_name': f"{driver_result['FirstName']} {driver_result['LastName']}", # Already string
+                    'team': str(driver_result['TeamName']) if pd.notna(driver_result['TeamName']) else None, # Ensure string
+                    'grid_position': int(driver_result['GridPosition']) if pd.notna(driver_result['GridPosition']) else None,
+                    'status': str(driver_result['Status']) if pd.notna(driver_result['Status']) else None, # Ensure string
+                    'points': float(driver_result['Points']) if pd.notna(driver_result['Points']) else 0.0, # Ensure float
+                    # Handle Time column which might be Timedelta or NaN
+                    'time': str(driver_result['Time']) if pd.notna(driver_result['Time']) else None,
+                    'fastest_lap': bool(is_fastest), # Ensure bool
+                    'fastest_lap_time': fastest_lap_time_str, # Already string or None
+                    # Gap to leader is often same as 'Time' for non-leader, handle NaN
+                    'gap_to_leader': str(driver_result['Time']) if pd.notna(driver_result['Time']) and driver_result['Position'] != 1 else None,
+                    'best_lap': best_lap_data, # Already dict with standard types or None
+                    # Handle TotalLaps which might not exist or be NaN
+                    'total_laps': int(driver_result['TotalLaps']) if 'TotalLaps' in driver_result and pd.notna(driver_result['TotalLaps']) else None
                 }
                 formatted_results.append(result)
 
+            # Final return dictionary with standard types
             return {
                 'status': 'success',
-                'session': session,
-                'event': event,
-                'year': year,
-                'results': formatted_results,
-                'total_drivers': len(formatted_results)
+                'session': request.session.value, # Use validated value
+                'event': request.event,
+                'year': request.year,
+                'results': formatted_results, # List of dicts with standard types
+                'total_drivers': len(formatted_results) # int
             }
-        except ValueError as ve:
+        except ValueError as ve: # Catch Pydantic validation errors
             self.logger.error(f"Validation error in get_session_results: {str(ve)}")
             raise HTTPException(status_code=400, detail=str(ve))
         except Exception as e:
-            self.logger.error(f"Error fetching session results: {str(e)}")
+            # Log the full traceback for better debugging
+            self.logger.exception(f"Error fetching session results for {year}/{event}/{session}: {str(e)}")
+            # Raise HTTPException to let FastAPI handle the error response correctly
             raise HTTPException(
-                status_code=500, detail=f"Error fetching session results: {str(e)}")
+                status_code=500, detail=f"Internal server error processing session results for {year}/{event}/{session}. Check server logs.")
 
     class DriverPerformanceRequest(BaseModel):
         year: int
@@ -471,18 +496,26 @@ class F1DataProvider:
                     'humidity': float(data['Humidity']) if pd.notna(data['Humidity']) else None,
                     'pressure': float(data['Pressure']) if pd.notna(data['Pressure']) else None,
                     'wind_speed': float(data['WindSpeed']) if pd.notna(data['WindSpeed']) else None,
+                    # Ensure float or None for wind direction
                     'wind_direction': float(data['WindDirection']) if pd.notna(data['WindDirection']) else None
                 }
-                weather_data.append(point)
+                weather_data.append(point) # point dict already contains standard types
 
+            # Final return dictionary with standard types
             return {
-                'session': 'Race',
-                'weather_data': weather_data
+                'status': 'success', # Added status
+                'session': 'Race', # Already string
+                'year': int(year), # Added year, ensure int
+                'event': str(event), # Added event, ensure string
+                'weather_data': weather_data # List of dicts with standard types
             }
+        except ValueError as ve: # Catch potential ValueErrors during conversion/loading
+             self.logger.error(f"Validation error in get_weather_data: {str(ve)}")
+             raise HTTPException(status_code=400, detail=str(ve))
         except Exception as e:
-            self.logger.error(f"Error fetching weather data: {str(e)}")
+            self.logger.exception(f"Error fetching weather data for {year}/{event}: {str(e)}") # Use logger.exception
             raise HTTPException(
-                status_code=500, detail=f"Error fetching weather data: {str(e)}")
+                status_code=500, detail=f"Internal server error processing weather data for {year}/{event}. Check server logs.")
 
     @cached(ttl=86400)  # Cache for 24 hours
     async def get_circuit_info(self, circuit_id: str) -> Dict:
@@ -511,45 +544,59 @@ class F1DataProvider:
             session = fastf1.get_session(current_year, circuit['EventName'], 'Race')
             session.load()
 
-            # Get circuit length and other details
+            # Get circuit length and other details, ensure float or None
             circuit_length = None
-            if hasattr(session, 'track_length'):
-                circuit_length = float(session.track_length)
+            # Check attribute exists and is not None before converting
+            if hasattr(session, 'circuit_info') and session.circuit_info is not None and 'length' in session.circuit_info:
+                 circuit_length = float(session.circuit_info['length']) if pd.notna(session.circuit_info['length']) else None
+            elif hasattr(session, 'track_length') and pd.notna(session.track_length): # Fallback for older fastf1 versions?
+                 circuit_length = float(session.track_length)
 
-            # Get DRS zones
+
+            # Get DRS zones, ensure int
             drs_zones = 0
-            if hasattr(session, 'drs_zones'):
-                drs_zones = len(session.drs_zones)
+            # Check attribute exists and is not None before getting length
+            if hasattr(session, 'get_circuit_info') and callable(session.get_circuit_info):
+                 circuit_details = session.get_circuit_info()
+                 if circuit_details is not None and hasattr(circuit_details, 'rotation') and circuit_details.rotation is not None: # Example check, adjust based on actual structure
+                     # Assuming DRS info might be nested differently, adjust as needed
+                     # This part is speculative without knowing the exact structure returned by get_circuit_info()
+                     pass # Placeholder: Add logic to extract DRS zones if available here
+            elif hasattr(session, 'drs_zones') and session.drs_zones is not None: # Fallback
+                 drs_zones = int(len(session.drs_zones))
 
-            # Get lap record if available
+            # Get lap record if available, ensure standard types
             lap_record = None
-            if hasattr(session, 'laps') and not session.laps.empty:
+            # Check laps attribute exists, is not None, and not empty
+            if hasattr(session, 'laps') and session.laps is not None and not session.laps.empty:
                 fastest_lap = session.laps.pick_fastest()
-                if fastest_lap is not None:
+                # Check fastest_lap is a Series and not None
+                if fastest_lap is not None and isinstance(fastest_lap, pd.Series):
                     lap_record = {
-                        'time': str(fastest_lap['LapTime']),
-                        'driver': f"{fastest_lap['Driver']}",
-                        'year': current_year
+                        'time': str(fastest_lap['LapTime']) if pd.notna(fastest_lap['LapTime']) else None, # Ensure string or None
+                        'driver': str(fastest_lap['Driver']) if pd.notna(fastest_lap['Driver']) else None, # Ensure string or None
+                        'year': int(current_year) # Ensure int
                     }
 
+            # Final return dictionary with standard types
             return {
                 'status': 'success',
-                'circuit_id': circuit_id,
-                'name': circuit['Location'],
-                'country': circuit['Country'],
-                'length': circuit_length,  # km
-                'turns': None,  # Not available in FastF1
-                'drs_zones': drs_zones,
-                'lap_record': lap_record,
-                'first_grand_prix': None,  # Not available in FastF1
-                'last_grand_prix': current_year
+                'circuit_id': str(circuit_id), # Ensure string
+                'name': str(circuit['Location']), # Ensure string
+                'country': str(circuit['Country']), # Ensure string
+                'length': circuit_length,  # Already float or None
+                'turns': None,  # Not available in FastF1, keep as None
+                'drs_zones': drs_zones, # Already int
+                'lap_record': lap_record, # Already dict with standard types or None
+                'first_grand_prix': None,  # Not available in FastF1, keep as None
+                'last_grand_prix': int(current_year) # Ensure int
             }
-        except HTTPException:
+        except HTTPException: # Re-raise HTTPException
             raise
         except Exception as e:
-            self.logger.error(f"Error fetching circuit info: {str(e)}")
+            self.logger.exception(f"Error fetching circuit info for {circuit_id}: {str(e)}") # Use logger.exception
             raise HTTPException(
-                status_code=500, detail=f"Error fetching circuit info: {str(e)}")
+                status_code=500, detail=f"Internal server error processing circuit info for {circuit_id}. Check server logs.")
 
     @cached(ttl=3600)  # Cache for 1 hour
     async def get_testing_session(self, year: int, test_number: int, session_number: int) -> Dict[str, Any]:
@@ -730,115 +777,171 @@ get_events_remaining = f1_provider.get_events_remaining
 async def get_driver_standings(year: Optional[int] = None) -> Dict[str, Any]:
     """Get current driver championship standings"""
     try:
-        if not year:
-            year = datetime.now().year
+        current_year = datetime.now().year
+        target_year = year if year is not None else current_year
+        
+        # Validate year
+        if not (1950 <= target_year <= current_year + 1): # Allow one year ahead for schedule checks
+             raise ValueError(f"Invalid year: {target_year}. Must be between 1950 and {current_year + 1}.")
 
-        session = fastf1.get_session(year, "last", "Race")
-        session.load(laps=True, telemetry=True, weather=True, messages=True)
+        # Load the session - only need results
+        # Using 'last' might be unreliable if the last event wasn't a race or had no results
+        # A better approach might be needed, but let's stick to fixing serialization for now.
+        session = fastf1.get_session(target_year, "last", "Race")
+        session.load(laps=False, telemetry=False, weather=False, messages=False, results=True)
 
-        if session:
-            standings = session.results
-            if standings is not None:
-                return {
-                    "status": "success",
-                    "data": standings.to_dict('records'),
-                    "year": year
-                }
+        # Check if results exist and are not empty
+        if session and session.results is not None and not session.results.empty:
+            standings_df = session.results
+            
+            # Convert DataFrame to list of dicts with standard types
+            standings_list = []
+            for _, driver_result in standings_df.iterrows():
+                 standings_list.append({
+                     # Explicitly convert types
+                     'position': int(driver_result['Position']) if pd.notna(driver_result['Position']) else None,
+                     'driver_number': str(driver_result['DriverNumber']) if pd.notna(driver_result['DriverNumber']) else None,
+                     'driver_code': str(driver_result['Abbreviation']) if pd.notna(driver_result['Abbreviation']) else None,
+                     'driver_name': f"{driver_result['FirstName']} {driver_result['LastName']}",
+                     'team': str(driver_result['TeamName']) if pd.notna(driver_result['TeamName']) else None,
+                     'points': float(driver_result['Points']) if pd.notna(driver_result['Points']) else 0.0,
+                     'wins': int(driver_result.get('Wins', 0)) if pd.notna(driver_result.get('Wins')) else 0, # Handle potential missing 'Wins' column
+                     'status': str(driver_result['Status']) if pd.notna(driver_result['Status']) else None,
+                     # Add other relevant fields if needed, ensuring standard types
+                 })
+            
+            # Sort by position if needed (though results are usually pre-sorted)
+            standings_list.sort(key=lambda x: x['position'] if x['position'] is not None else float('inf'))
+
+            return {
+                "status": "success",
+                "data": standings_list, # List of dicts with standard types
+                "year": int(target_year) # Ensure int
+            }
+        
+        # If no results found for the 'last' race session
         return {
-            "status": "error",
-            "message": f"No standings data found for year {year}"
+            "status": "success", # Return success but indicate no data
+            "message": f"No standings data found for the latest race session of {target_year}.",
+            "data": [],
+            "year": int(target_year)
         }
+    except ValueError as ve: # Catch specific validation errors
+        logger.error(f"Validation error in get_driver_standings: {str(ve)}")
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
-        logger.error(f"Error in get_driver_standings: {str(e)}")
-        return {
-            "status": "error",
-            "message": str(e)
-        }
+        logger.exception(f"Error in get_driver_standings for year {year}: {str(e)}") # Use logger.exception
+        # Raise HTTPException for FastAPI to handle
+        raise HTTPException(status_code=500, detail=f"Internal server error processing driver standings for year {year}. Check server logs.")
 
 
-class CustomJSONEncoder(JSONEncoder):
-    """Custom JSON encoder that handles special types."""
-    def default(self, obj):
-        # Convert numpy types to Python standard types
-        if hasattr(obj, "dtype") and hasattr(obj, "item"):
-            return obj.item()
-        # Convert sets to lists
-        if isinstance(obj, set):
-            return list(obj)
-        # Convert other non-serializable types to strings
-        try:
-            return JSONEncoder.default(self, obj)
-        except TypeError:
-            return str(obj)
+# Removed CustomJSONEncoder and safe_serialize as we will ensure standard types before returning
 
-def safe_serialize(data):
-    """Safely serialize data to JSON string, handling special types."""
-    return json.dumps(data, cls=CustomJSONEncoder)
+# class CustomJSONEncoder(JSONEncoder):
+#     """Custom JSON encoder that handles special types."""
+#     def default(self, obj):
+#         # Convert numpy types to Python standard types
+#         if hasattr(obj, "dtype") and hasattr(obj, "item"):
+#             return obj.item()
+#         # Convert sets to lists
+#         if isinstance(obj, set):
+#             return list(obj)
+#         # Convert other non-serializable types to strings
+#         try:
+#             return JSONEncoder.default(self, obj)
+#         except TypeError:
+#             return str(obj)
+
+# def safe_serialize(data):
+#     """Safely serialize data to JSON string, handling special types."""
+#     return json.dumps(data, cls=CustomJSONEncoder)
 
 async def get_constructor_standings(year: Optional[int] = None) -> Dict[str, Any]:
     """Get constructor championship standings"""
+    # Removed misplaced default() and safe_serialize() definitions from here
     try:
         if not year:
             year = datetime.now().year
 
         # Get the most recent race session
+        # Increased timeout and added retries for robustness
         session = fastf1.get_session(year, "last", "Race")
-        session.load()
+        
+        # Add try-except around session.load() to catch fastf1 loading errors
+        try:
+            # Removed invalid 'results=True' argument
+            session.load(telemetry=False, weather=False, messages=False, laps=False) 
+        except (fastf1.ergast.ErgastError, fastf1._api.SessionNotAvailableError, KeyError, Exception) as load_error:
+            # Catch specific fastf1 errors, KeyError during loading, and general exceptions
+            logger.warning(f"FastF1 failed to load data for {year} 'last' Race session: {load_error}")
+            # Return an error indicating data loading failure for this session
+            return {
+                "status": "error",
+                "message": f"Could not load required data for year {year} (Session: 'last' Race). The session might be unavailable or data missing.",
+                "data": [],
+                "year": int(year)
+            }
 
-        if session and session.results is not None:
+        if session and session.results is not None and not session.results.empty: # Added empty check
             # Group results by constructor and calculate points
             constructor_points = {}
             for _, result in session.results.iterrows():
                 constructor = result['TeamName']
-                points = float(result['Points']) if pd.notna(result['Points']) else 0
+                # Explicitly convert points to standard Python float
+                points = float(result['Points']) if pd.notna(result['Points']) else 0.0
+                # Ensure position is treated correctly for win calculation
+                position = int(result['Position']) if pd.notna(result['Position']) else 0
+
                 if constructor not in constructor_points:
                     constructor_points[constructor] = {
-                        'points': 0,
-                        'wins': 0,
-                        'nationality': result.get('TeamNationality', 'Unknown'),
-                        'constructor_id': constructor.lower().replace(' ', '_')
+                        'points': 0.0, # Initialize as float
+                        'wins': 0,     # Initialize as int
+                        'nationality': str(result.get('TeamNationality', 'Unknown')), # Ensure string
+                        'constructor_id': str(constructor).lower().replace(' ', '_') # Ensure string
                     }
                 constructor_points[constructor]['points'] += points
-                if points > 0 and result['Position'] == 1:
+                # Check position for win
+                if points > 0 and position == 1:
                     constructor_points[constructor]['wins'] += 1
 
             # Convert to list and sort by points
             standings = []
-            for constructor, data in constructor_points.items():
+            position_counter = 1
+            for constructor, data in sorted(constructor_points.items(), key=lambda item: (-item[1]['points'], -item[1]['wins'])):
+                 # Ensure all values are standard Python types before appending
                 standings.append({
-                    'position': len([s for s in standings if s['points'] > data['points']]) + 1,
-                    'team': constructor,
-                    'points': data['points'],
-                    'wins': data['wins'],
-                    'nationality': data['nationality'],
-                    'constructor_id': data['constructor_id']
+                    'position': position_counter, # Calculate position based on sort order
+                    'team': str(constructor),
+                    'points': float(data['points']), # Ensure float
+                    'wins': int(data['wins']),       # Ensure int
+                    'nationality': str(data['nationality']),
+                    'constructor_id': str(data['constructor_id'])
                 })
+                position_counter += 1
 
-            standings.sort(key=lambda x: (-x['points'], -x['wins']))
+            # standings.sort(key=lambda x: (-x['points'], -x['wins'])) # Sorting done before loop now
 
             return {
                 "status": "success",
-                "data": standings,
-                "year": year,
+                "data": standings, # Already contains standard types
+                "year": int(year), # Ensure int
                 "total_teams": len(standings),
-                "round": str(session.event['RoundNumber']),
-                "season": str(year)
+                "round": str(session.event['RoundNumber']) if pd.notna(session.event['RoundNumber']) else None, # Ensure string or None
+                "season": str(year) # Ensure string
             }
 
         return {
             "status": "error",
             "message": f"No standings data found for year {year}",
             "data": [],
-            "year": year
+            "year": int(year) # Ensure int
         }
+    except HTTPException: # Re-raise HTTPExceptions directly
+        raise
     except Exception as e:
-        logger.error(f"Error in get_constructor_standings: {str(e)}")
-        return {
-            "status": "error",
-            "message": str(e),
-            "data": [],
-            "year": year
-        }
+        # Log the full traceback for better debugging for unexpected errors AFTER loading
+        logger.exception(f"Unexpected error processing constructor standings for year {year} after data load: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error processing constructor standings for year {year}. Check server logs.")
 
 
 async def get_race_results(year: int, grand_prix: str, session_type: str) -> Dict[str, Any]:

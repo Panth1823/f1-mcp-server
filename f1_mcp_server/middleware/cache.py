@@ -91,7 +91,8 @@ class F1CacheMiddleware(BaseHTTPMiddleware):
         
         # Cache the response if status is 200 OK
         if response.status_code == 200:
-            await self._cache_response(cache_key, response, request.url.path)
+            # Store the potentially new response object returned by _cache_response
+            response = await self._cache_response(cache_key, response, request.url.path)
         
         # Periodic cache cleanup
         current_time = time.time()
@@ -145,21 +146,22 @@ class F1CacheMiddleware(BaseHTTPMiddleware):
             headers=dict(response.headers),
             status_code=response.status_code
         )
-        
+
         # Store in cache
         self.cache[cache_key] = entry
-        
+
         # If cache is too large, remove oldest entries
         if len(self.cache) > self.max_cache_size:
             self._trim_cache()
-        
-        # Recreate the response since we consumed the body iterator
+
+        # Return the *new* response object created with the consumed body
+        # This ensures the body_iterator isn't consumed twice
         return Response(
             content=response_body,
             status_code=response.status_code,
             headers=dict(response.headers)
         )
-    
+
     def _trim_cache(self):
         """Remove oldest entries when cache exceeds max size"""
         # Sort entries by timestamp
