@@ -672,91 +672,151 @@ class F1DataProvider:
             else:
                 standardized_id = normalized_circuit_id
             
-            # Get current year's schedule to find the circuit
+            # Try to get information from multiple years to gather as much data as possible
             current_year = datetime.now().year
-            schedule = fastf1.get_event_schedule(current_year)
             
-            if schedule is None or schedule.empty:
-                # Try previous year if current year's schedule isn't available
-                schedule = fastf1.get_event_schedule(current_year - 1)
-                if schedule is None or schedule.empty:
-                    raise HTTPException(
-                        status_code=404, detail="Could not fetch circuit information")
+            # Create a list of years to check, starting from the current year and going back
+            years_to_check = list(range(current_year, current_year - 5, -1))
             
-            # Find the circuit in the schedule using flexible matching
-            circuit = None
+            circuit_info = None
+            schedule = None
             
-            # First try exact match with standardized ID
-            for _, event in schedule.iterrows():
-                location = event['Location'].lower() if pd.notna(event['Location']) else ""
-                country = event['Country'].lower() if pd.notna(event['Country']) else ""
-                event_name = event['EventName'].lower() if pd.notna(event['EventName']) else ""
+            # Try each year until we find the circuit
+            for year in years_to_check:
+                try:
+                    schedule = fastf1.get_event_schedule(year)
+                    if schedule is not None and not schedule.empty:
+                        # Find the circuit in the schedule using flexible matching
+                        for _, event in schedule.iterrows():
+                            location = event['Location'].lower() if pd.notna(event['Location']) else ""
+                            country = event['Country'].lower() if pd.notna(event['Country']) else ""
+                            event_name = event['EventName'].lower() if pd.notna(event['EventName']) else ""
+                            
+                            # Try multiple ways to match the circuit
+                            if (standardized_id == location or 
+                                standardized_id in location or 
+                                standardized_id == country or 
+                                standardized_id in country or
+                                standardized_id in event_name):
+                                circuit_info = event
+                                break
+                        
+                        if circuit_info is not None:
+                            break
+                except Exception as e:
+                    self.logger.warning(f"Could not fetch circuit schedule for year {year}: {str(e)}")
+                    continue
+            
+            if circuit_info is None:
+                # If still not found, try to fetch from Ergast API
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(f"http://ergast.com/api/f1/circuits/{standardized_id}.json") as response:
+                            if response.status == 200:
+                                ergast_data = await response.json()
+                                circuit_table = ergast_data.get('MRData', {}).get('CircuitTable', {})
+                                circuits = circuit_table.get('Circuits', [])
+                                
+                                if circuits and len(circuits) > 0:
+                                    ergast_circuit = circuits[0]
+                                    return {
+                                        'status': 'success',
+                                        'circuit_id': str(circuit_id),
+                                        'name': ergast_circuit.get('circuitName', 'Unknown'),
+                                        'country': ergast_circuit.get('Location', {}).get('country', 'Unknown'),
+                                        'length': None,  # Not provided by Ergast
+                                        'turns': None,   # Not provided by Ergast
+                                        'drs_zones': None,  # Not provided by Ergast
+                                        'lap_record': None,  # Not provided by Ergast
+                                        'first_grand_prix': None,  # Not provided by Ergast
+                                        'last_grand_prix': None,  # Not provided by Ergast
+                                        'data_source': 'ergast'
+                                    }
+                except Exception as ergast_error:
+                    self.logger.warning(f"Could not fetch circuit data from Ergast API: {str(ergast_error)}")
                 
-                # Try multiple ways to match the circuit
-                if (standardized_id == location or 
-                    standardized_id in location or 
-                    standardized_id == country or 
-                    standardized_id in country or
-                    standardized_id in event_name):
-                    circuit = event
-                    break
-            
-            if circuit is None:
-                # Return static data for common circuits if not found in schedule
-                static_circuit_data = self._get_static_circuit_data(standardized_id)
-                if static_circuit_data:
-                    return static_circuit_data
+                # If still not found, check the formula1.com API
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        # Note: This URL is a placeholder and would need to be updated with the actual F1 API endpoint
+                        async with session.get(f"https://api.formula1.com/v1/circuits/{standardized_id}") as response:
+                            if response.status == 200:
+                                f1_data = await response.json()
+                                # Process F1 API data here
+                                # This would need to be updated with actual F1 API response structure
+                except Exception as f1_api_error:
+                    self.logger.warning(f"Could not fetch circuit data from F1 API: {str(f1_api_error)}")
                 
-                # If still not found, raise 404
+                # If we still couldn't find the circuit, raise a 404
                 raise HTTPException(
-                    status_code=404, detail=f"Circuit '{circuit_id}' not found")
+                    status_code=404, detail=f"Circuit '{circuit_id}' not found in any data source")
 
-            # Build basic response with data we already have from the schedule
+            # Build response with data from the schedule
             response = {
                 'status': 'success',
                 'circuit_id': str(circuit_id),
-                'name': str(circuit['Location']),
-                'country': str(circuit['Country']),
+                'name': str(circuit_info['Location']),
+                'country': str(circuit_info['Country']),
                 'length': None,
                 'turns': None,
                 'drs_zones': 0,
                 'lap_record': None,
                 'first_grand_prix': None,
-                'last_grand_prix': int(current_year)
+                'last_grand_prix': int(current_year if circuit_info['EventDate'].year == current_year else circuit_info['EventDate'].year),
+                'data_source': 'fastf1'
             }
             
-            try:
-                # Try to get additional details from a session, but don't fail if this doesn't work
-                session = fastf1.get_session(current_year, circuit['EventName'], 'Race')
-                session.load(laps=True, telemetry=False, weather=False, messages=False)
-                
-                # Get circuit length if available
-                if hasattr(session, 'circuit_info') and session.circuit_info is not None:
-                    if 'length' in session.circuit_info and pd.notna(session.circuit_info['length']):
-                        response['length'] = float(session.circuit_info['length'])
-                
-                # Get DRS zones if available
-                if hasattr(session, 'drs_zones') and session.drs_zones is not None:
-                    response['drs_zones'] = int(len(session.drs_zones))
-                
-                # Get lap record if available
-                if hasattr(session, 'laps') and session.laps is not None and not session.laps.empty:
-                    try:
-                        fastest_lap = session.laps.pick_fastest()
-                        if fastest_lap is not None and isinstance(fastest_lap, pd.Series):
-                            response['lap_record'] = {
-                                'time': str(fastest_lap['LapTime']) if pd.notna(fastest_lap['LapTime']) else None,
-                                'driver': str(fastest_lap['Driver']) if pd.notna(fastest_lap['Driver']) else None,
-                                'year': int(current_year)
-                            }
-                    except Exception:
-                        # Silently ignore failures in lap record extraction
-                        pass
+            # Try to get additional details from a session
+            for year in years_to_check:
+                try:
+                    session = fastf1.get_session(year, circuit_info['EventName'], 'Race')
+                    session.load(laps=True, telemetry=False, weather=False, messages=False)
                     
-            except Exception as session_error:
-                # Log the error but don't fail the request - return what we have
-                self.logger.warning(f"Could not load detailed session data for {circuit_id}: {str(session_error)}")
-                
+                    # Get circuit length if available
+                    if hasattr(session, 'circuit_info') and session.circuit_info is not None:
+                        if 'length' in session.circuit_info and pd.notna(session.circuit_info['length']):
+                            response['length'] = float(session.circuit_info['length'])
+                    
+                    # Get DRS zones if available
+                    if hasattr(session, 'drs_zones') and session.drs_zones is not None:
+                        response['drs_zones'] = int(len(session.drs_zones))
+                    
+                    # Get lap record if available
+                    if hasattr(session, 'laps') and session.laps is not None and not session.laps.empty:
+                        try:
+                            fastest_lap = session.laps.pick_fastest()
+                            if fastest_lap is not None and isinstance(fastest_lap, pd.Series):
+                                lap_time = str(fastest_lap['LapTime']) if pd.notna(fastest_lap['LapTime']) else None
+                                driver = str(fastest_lap['Driver']) if pd.notna(fastest_lap['Driver']) else None
+                                
+                                # Update lap record if it's faster than what we already have
+                                if response.get('lap_record') is None or (
+                                    lap_time is not None and 
+                                    response['lap_record'].get('time') is not None and 
+                                    lap_time < response['lap_record']['time']
+                                ):
+                                    response['lap_record'] = {
+                                        'time': lap_time,
+                                        'driver': driver,
+                                        'year': int(year)
+                                    }
+                        except Exception:
+                            # Silently ignore failures in lap record extraction
+                            pass
+                    
+                    # If we've filled in all the missing data, break
+                    if all(v is not None for v in [response['length'], response['drs_zones'], response['lap_record']]):
+                        break
+                        
+                except Exception as session_error:
+                    # Log the error but continue trying other years
+                    self.logger.warning(f"Could not load detailed session data for {circuit_id} in {year}: {str(session_error)}")
+                    continue
+            
+            # Try to get first grand prix information from supplementary sources
+            # This would typically come from a database or third-party API
+            # For now, we'll leave it as None or look for the earliest available data
+            
             return response
         except HTTPException:
             raise
@@ -764,85 +824,6 @@ class F1DataProvider:
             self.logger.exception(f"Error fetching circuit info for {circuit_id}: {str(e)}")
             raise HTTPException(
                 status_code=500, detail=f"Internal server error processing circuit info for {circuit_id}. Check server logs.")
-
-    def _get_static_circuit_data(self, circuit_id: str) -> Dict:
-        """Return static circuit data for known circuits when FastF1 data is unavailable"""
-        static_data = {
-            'bahrain': {
-                'status': 'success',
-                'circuit_id': 'bahrain',
-                'name': 'Bahrain International Circuit',
-                'country': 'Bahrain',
-                'length': 5.412,
-                'turns': 15,
-                'drs_zones': 3,
-                'lap_record': {'time': '1:31.447', 'driver': 'Pedro de la Rosa', 'year': 2005},
-                'first_grand_prix': 2004,
-                'last_grand_prix': datetime.now().year
-            },
-            'jeddah': {
-                'status': 'success',
-                'circuit_id': 'jeddah',
-                'name': 'Jeddah Corniche Circuit',
-                'country': 'Saudi Arabia',
-                'length': 6.175,
-                'turns': 27,
-                'drs_zones': 3,
-                'lap_record': {'time': '1:30.734', 'driver': 'Lewis Hamilton', 'year': 2021},
-                'first_grand_prix': 2021,
-                'last_grand_prix': datetime.now().year
-            },
-            'melbourne': {
-                'status': 'success',
-                'circuit_id': 'melbourne',
-                'name': 'Albert Park Circuit',
-                'country': 'Australia',
-                'length': 5.278,
-                'turns': 14,
-                'drs_zones': 4,
-                'lap_record': {'time': '1:20.235', 'driver': 'Charles Leclerc', 'year': 2022},
-                'first_grand_prix': 1996,
-                'last_grand_prix': datetime.now().year
-            },
-            'suzuka': {
-                'status': 'success',
-                'circuit_id': 'suzuka',
-                'name': 'Suzuka International Racing Course',
-                'country': 'Japan',
-                'length': 5.807,
-                'turns': 18,
-                'drs_zones': 2,
-                'lap_record': {'time': '1:30.983', 'driver': 'Lewis Hamilton', 'year': 2019},
-                'first_grand_prix': 1987,
-                'last_grand_prix': datetime.now().year
-            },
-            'shanghai': {
-                'status': 'success',
-                'circuit_id': 'shanghai',
-                'name': 'Shanghai International Circuit',
-                'country': 'China',
-                'length': 5.451,
-                'turns': 16,
-                'drs_zones': 2,
-                'lap_record': {'time': '1:32.238', 'driver': 'Michael Schumacher', 'year': 2004},
-                'first_grand_prix': 2004,
-                'last_grand_prix': datetime.now().year
-            },
-            'spa': {
-                'status': 'success',
-                'circuit_id': 'spa',
-                'name': 'Circuit de Spa-Francorchamps',
-                'country': 'Belgium',
-                'length': 7.004,
-                'turns': 19,
-                'drs_zones': 2,
-                'lap_record': {'time': '1:46.286', 'driver': 'Valtteri Bottas', 'year': 2018},
-                'first_grand_prix': 1950,
-                'last_grand_prix': datetime.now().year
-            },
-        }
-        
-        return static_data.get(circuit_id, None)
 
     @cached(ttl=3600)  # Cache for 1 hour
     async def get_testing_session(self, year: int, test_number: int, session_number: int) -> Dict[str, Any]:

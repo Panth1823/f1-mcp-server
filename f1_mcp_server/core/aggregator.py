@@ -7,7 +7,6 @@ from typing import Optional, Tuple, Dict
 from ..adapters.openf1_adapter import OpenF1Adapter
 from ..adapters.fastf1_adapter import FastF1Adapter
 from ..data_models.schemas import F1Data, SessionData, DriverData
-from .mock_data import MockDataGenerator
 from datetime import datetime
 import fastf1
 import asyncio
@@ -27,19 +26,19 @@ class DataAggregator:
         self.last_gp = None
         self.last_session_type = None
         self.fastf1_session = None
-        self.mock_generator = MockDataGenerator()  # Add mock data generator
-        self.use_mock_data = False  # Flag to control mock data usage
         self._live_timing_cache = {}
         self._session = None
         
     async def initialize(self):
         """Initialize the data adapters"""
         await self.openf1.initialize()
+        self._session = aiohttp.ClientSession()
         
     async def close(self):
         """Close the data adapters"""
         await self.openf1.close()
-        await self._session.close()
+        if self._session:
+            await self._session.close()
         
     async def get_current_session_info(self) -> Tuple[Optional[int], Optional[int], Optional[str], Optional[str]]:
         """
@@ -67,11 +66,6 @@ class DataAggregator:
             An F1Data object containing combined data
         """
         try:
-            # Use mock data only if explicitly enabled
-            if self.use_mock_data:
-                logger.info("Using mock data")
-                return self.mock_generator.generate_data()
-            
             # Get current session info
             session_key, year, grand_prix, session_type = await self.get_current_session_info()
             
@@ -89,11 +83,11 @@ class DataAggregator:
                         session_type = 'Race'  # Default to race session
                         logger.info(f"Using historical data from {grand_prix} {year}")
                     else:
-                        logger.warning("No historical session found, using mock data")
-                        return self.mock_generator.generate_data()
+                        logger.warning("No historical session data available")
+                        return None
                 except Exception as e:
                     logger.error(f"Error getting historical session: {str(e)}")
-                    return self.mock_generator.generate_data()
+                    return None
             
             # Update FastF1 session if needed
             if (session_key != self.last_session_key or 
@@ -191,87 +185,44 @@ class DataAggregator:
                     gap_to_leader=None  # Will be calculated if position data is available
                 )
                 
-                # Add FastF1 data if available
-                if self.fastf1_session:
-                    laps_df = self.fastf1.get_lap_times(self.fastf1_session)
-                    if not laps_df.empty:
-                        driver_laps_df = laps_df[laps_df['Driver'] == driver_number]
-                        if not driver_laps_df.empty:
-                            # Update sector times
-                            last_lap = driver_laps_df.iloc[-1]
-                            driver_data.sector_times = {
-                                'S1': last_lap.get('Sector1Time', None),
-                                'S2': last_lap.get('Sector2Time', None),
-                                'S3': last_lap.get('Sector3Time', None)
-                            }
-                            # Update tire compound
-                            driver_data.tire_compound = last_lap.get('Compound', None)
-                
                 # Add to F1Data
                 f1_data.drivers[driver_number] = driver_data
             
-            # Calculate gaps to leader if we have position data
-            if len(f1_data.drivers) > 0:
-                sorted_drivers = sorted(f1_data.drivers.values(), key=lambda x: x.position if x.position else float('inf'))
-                leader = sorted_drivers[0]
-                for driver in sorted_drivers[1:]:
-                    if driver.position and leader.position:
-                        if driver.last_lap_time and leader.last_lap_time:
-                            driver.gap_to_leader = driver.last_lap_time - leader.last_lap_time
-            
             return f1_data
-            
         except Exception as e:
-            logger.error(f"Error getting F1 data: {str(e)}")
-            # Only use mock data as a last resort
-            if self.use_mock_data:
-                return self.mock_generator.generate_data()
+            logger.error(f"Error in get_current_data: {str(e)}")
             return None
-
-    async def _ensure_session(self):
-        """Ensure aiohttp session exists"""
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
     
     async def get_live_timing(self, session_id: str) -> Optional[Dict]:
         """Get live timing data for a session"""
         try:
+            # This should connect to F1's live timing service
             # For now, return cached data if available
             if session_id in self._live_timing_cache:
                 return self._live_timing_cache[session_id]
             
-            # In a real implementation, this would connect to F1's live timing service
-            # For now, return mock data
-            mock_data = {
-                "session_id": session_id,
-                "timestamp": "2024-03-29T12:00:00Z",
-                "drivers": [
-                    {
-                        "number": "1",
-                        "code": "VER",
-                        "position": 1,
-                        "last_lap": "1:32.456",
-                        "gap_to_leader": "+0.000",
-                        "sector_1": "28.123",
-                        "sector_2": "32.456",
-                        "sector_3": "31.877"
-                    },
-                    {
-                        "number": "11",
-                        "code": "PER",
-                        "position": 2,
-                        "last_lap": "1:32.789",
-                        "gap_to_leader": "+0.333",
-                        "sector_1": "28.234",
-                        "sector_2": "32.567",
-                        "sector_3": "31.988"
-                    }
-                ]
-            }
-            
-            # Cache the data
-            self._live_timing_cache[session_id] = mock_data
-            return mock_data
+            # TODO: Implement connection to real F1 Live Timing API
+            # This requires credentials for F1's official data service
+            # Example implementation:
+            try:
+                # Here you would call the actual F1 Live Timing API
+                # This is a placeholder for the real implementation
+                if not self._session:
+                    self._session = aiohttp.ClientSession()
+                
+                # Example: async with self._session.get(f"{LIVE_TIMING_API_BASE_URL}/{session_id}") as response:
+                #     if response.status == 200:
+                #         live_data = await response.json()
+                #         self._live_timing_cache[session_id] = live_data
+                #         return live_data
+                
+                # For now, returning None until proper API implementation
+                logger.warning("Live timing API connection not yet implemented")
+                return None
+                
+            except Exception as e:
+                logger.error(f"Error connecting to Live Timing API: {str(e)}")
+                return None
             
         except Exception as e:
             logger.error(f"Error getting live timing data: {str(e)}")
