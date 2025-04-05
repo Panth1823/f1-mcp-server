@@ -281,7 +281,8 @@ async def handle_compare_drivers(request: CompareDriversRequest):
 
 @app.get("/mcp/function/get_live_timing")
 async def handle_get_live_timing(session_id: str):
-    return await get_live_timing(session_id)
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(get_live_timing(session_id))
 
 @app.get("/mcp/function/get_weather_data")
 async def handle_get_weather_data(year: int, event: str):

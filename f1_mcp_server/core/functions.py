@@ -26,6 +26,148 @@ logger = logging.getLogger(__name__)
 # Initialize FastF1 cache
 fastf1.Cache.enable_cache('fastf1_cache')
 
+CIRCUIT_MAPPINGS = {
+    # Bahrain
+    "bahrain": "bahrain",
+    "bahrain international circuit": "bahrain",
+    "sakhir": "bahrain",
+    "bhr": "bahrain",
+    
+    # Saudi Arabia
+    "jeddah": "jeddah",
+    "saudi": "jeddah",
+    "saudi arabia": "jeddah",
+    "jeddah corniche circuit": "jeddah",
+    
+    # Australia
+    "melbourne": "melbourne",
+    "albert park": "melbourne",
+    "australia": "melbourne",
+    "aus": "melbourne",
+    
+    # Japan
+    "suzuka": "suzuka",
+    "japan": "suzuka",
+    "suzuka international racing course": "suzuka",
+    "jpn": "suzuka",
+    
+    # China
+    "shanghai": "shanghai",
+    "china": "shanghai",
+    "shanghai international circuit": "shanghai",
+    "chn": "shanghai",
+    
+    # USA
+    "miami": "miami",
+    "miami international autodrome": "miami",
+    "usa": "miami",
+    
+    # Italy
+    "imola": "imola",
+    "emilia romagna": "imola",
+    "autodromo enzo e dino ferrari": "imola",
+    "ita": "imola",
+    
+    # Monaco
+    "monaco": "monaco",
+    "monte carlo": "monaco",
+    "circuit de monaco": "monaco",
+    "mon": "monaco",
+    
+    # Canada
+    "montreal": "montreal",
+    "canada": "montreal",
+    "circuit gilles villeneuve": "montreal",
+    "can": "montreal",
+    
+    # Spain
+    "barcelona": "barcelona",
+    "spain": "barcelona",
+    "circuit de barcelona-catalunya": "barcelona",
+    "esp": "barcelona",
+    
+    # Austria
+    "spielberg": "spielberg",
+    "austria": "spielberg",
+    "red bull ring": "spielberg",
+    "aut": "spielberg",
+    
+    # UK
+    "silverstone": "silverstone",
+    "united kingdom": "silverstone",
+    "uk": "silverstone",
+    "gbr": "silverstone",
+    "great britain": "silverstone",
+    
+    # Hungary
+    "hungaroring": "hungaroring",
+    "hungary": "hungaroring",
+    "hun": "hungaroring",
+    
+    # Belgium
+    "spa": "spa",
+    "spa-francorchamps": "spa",
+    "belgium": "spa",
+    "bel": "spa",
+    
+    # Netherlands
+    "zandvoort": "zandvoort",
+    "netherlands": "zandvoort",
+    "circuit zandvoort": "zandvoort",
+    "ned": "zandvoort",
+    
+    # Italy (Monza)
+    "monza": "monza",
+    "autodromo nazionale monza": "monza",
+    
+    # Azerbaijan
+    "baku": "baku",
+    "azerbaijan": "baku",
+    "baku city circuit": "baku",
+    "aze": "baku",
+    
+    # Singapore
+    "singapore": "singapore",
+    "marina bay": "singapore",
+    "marina bay street circuit": "singapore",
+    "sin": "singapore",
+    
+    # USA (Austin)
+    "austin": "austin",
+    "cota": "austin",
+    "circuit of the americas": "austin",
+    "usa": "austin",
+    
+    # Mexico
+    "mexico": "mexico",
+    "mexico city": "mexico",
+    "autodromo hermanos rodriguez": "mexico",
+    "mex": "mexico",
+    
+    # Brazil
+    "brazil": "brazil",
+    "interlagos": "brazil",
+    "sao paulo": "brazil",
+    "autodromo jose carlos pace": "brazil",
+    "bra": "brazil",
+    
+    # USA (Las Vegas)
+    "las vegas": "las vegas",
+    "las vegas street circuit": "las vegas",
+    
+    # Qatar
+    "qatar": "qatar",
+    "lusail": "qatar",
+    "lusail international circuit": "qatar",
+    "qat": "qatar",
+    
+    # UAE
+    "abu dhabi": "abu dhabi",
+    "yas marina": "abu dhabi",
+    "yas marina circuit": "abu dhabi",
+    "uae": "abu dhabi",
+    "are": "abu dhabi"
+}
 
 class SessionType(str, Enum):
     FP1 = "FP1"
@@ -521,82 +663,186 @@ class F1DataProvider:
     async def get_circuit_info(self, circuit_id: str) -> Dict:
         """Get detailed information about a specific circuit"""
         try:
+            # Normalize circuit_id and check for mapping
+            normalized_circuit_id = circuit_id.lower().strip()
+            
+            # Use the circuit mappings to get the standardized circuit id
+            if normalized_circuit_id in CIRCUIT_MAPPINGS:
+                standardized_id = CIRCUIT_MAPPINGS[normalized_circuit_id]
+            else:
+                standardized_id = normalized_circuit_id
+            
             # Get current year's schedule to find the circuit
             current_year = datetime.now().year
             schedule = fastf1.get_event_schedule(current_year)
             
             if schedule is None or schedule.empty:
-                raise HTTPException(
-                    status_code=404, detail="Could not fetch circuit information")
-
-            # Find the circuit in the schedule
+                # Try previous year if current year's schedule isn't available
+                schedule = fastf1.get_event_schedule(current_year - 1)
+                if schedule is None or schedule.empty:
+                    raise HTTPException(
+                        status_code=404, detail="Could not fetch circuit information")
+            
+            # Find the circuit in the schedule using flexible matching
             circuit = None
+            
+            # First try exact match with standardized ID
             for _, event in schedule.iterrows():
-                if circuit_id.lower() in event['Location'].lower():
+                location = event['Location'].lower() if pd.notna(event['Location']) else ""
+                country = event['Country'].lower() if pd.notna(event['Country']) else ""
+                event_name = event['EventName'].lower() if pd.notna(event['EventName']) else ""
+                
+                # Try multiple ways to match the circuit
+                if (standardized_id == location or 
+                    standardized_id in location or 
+                    standardized_id == country or 
+                    standardized_id in country or
+                    standardized_id in event_name):
                     circuit = event
                     break
-
+            
             if circuit is None:
+                # Return static data for common circuits if not found in schedule
+                static_circuit_data = self._get_static_circuit_data(standardized_id)
+                if static_circuit_data:
+                    return static_circuit_data
+                
+                # If still not found, raise 404
                 raise HTTPException(
                     status_code=404, detail=f"Circuit '{circuit_id}' not found")
 
-            # Get the most recent race session for this circuit
-            session = fastf1.get_session(current_year, circuit['EventName'], 'Race')
-            session.load()
-
-            # Get circuit length and other details, ensure float or None
-            circuit_length = None
-            # Check attribute exists and is not None before converting
-            if hasattr(session, 'circuit_info') and session.circuit_info is not None and 'length' in session.circuit_info:
-                 circuit_length = float(session.circuit_info['length']) if pd.notna(session.circuit_info['length']) else None
-            elif hasattr(session, 'track_length') and pd.notna(session.track_length): # Fallback for older fastf1 versions?
-                 circuit_length = float(session.track_length)
-
-
-            # Get DRS zones, ensure int
-            drs_zones = 0
-            # Check attribute exists and is not None before getting length
-            if hasattr(session, 'get_circuit_info') and callable(session.get_circuit_info):
-                 circuit_details = session.get_circuit_info()
-                 if circuit_details is not None and hasattr(circuit_details, 'rotation') and circuit_details.rotation is not None: # Example check, adjust based on actual structure
-                     # Assuming DRS info might be nested differently, adjust as needed
-                     # This part is speculative without knowing the exact structure returned by get_circuit_info()
-                     pass # Placeholder: Add logic to extract DRS zones if available here
-            elif hasattr(session, 'drs_zones') and session.drs_zones is not None: # Fallback
-                 drs_zones = int(len(session.drs_zones))
-
-            # Get lap record if available, ensure standard types
-            lap_record = None
-            # Check laps attribute exists, is not None, and not empty
-            if hasattr(session, 'laps') and session.laps is not None and not session.laps.empty:
-                fastest_lap = session.laps.pick_fastest()
-                # Check fastest_lap is a Series and not None
-                if fastest_lap is not None and isinstance(fastest_lap, pd.Series):
-                    lap_record = {
-                        'time': str(fastest_lap['LapTime']) if pd.notna(fastest_lap['LapTime']) else None, # Ensure string or None
-                        'driver': str(fastest_lap['Driver']) if pd.notna(fastest_lap['Driver']) else None, # Ensure string or None
-                        'year': int(current_year) # Ensure int
-                    }
-
-            # Final return dictionary with standard types
-            return {
+            # Build basic response with data we already have from the schedule
+            response = {
                 'status': 'success',
-                'circuit_id': str(circuit_id), # Ensure string
-                'name': str(circuit['Location']), # Ensure string
-                'country': str(circuit['Country']), # Ensure string
-                'length': circuit_length,  # Already float or None
-                'turns': None,  # Not available in FastF1, keep as None
-                'drs_zones': drs_zones, # Already int
-                'lap_record': lap_record, # Already dict with standard types or None
-                'first_grand_prix': None,  # Not available in FastF1, keep as None
-                'last_grand_prix': int(current_year) # Ensure int
+                'circuit_id': str(circuit_id),
+                'name': str(circuit['Location']),
+                'country': str(circuit['Country']),
+                'length': None,
+                'turns': None,
+                'drs_zones': 0,
+                'lap_record': None,
+                'first_grand_prix': None,
+                'last_grand_prix': int(current_year)
             }
-        except HTTPException: # Re-raise HTTPException
+            
+            try:
+                # Try to get additional details from a session, but don't fail if this doesn't work
+                session = fastf1.get_session(current_year, circuit['EventName'], 'Race')
+                session.load(laps=True, telemetry=False, weather=False, messages=False)
+                
+                # Get circuit length if available
+                if hasattr(session, 'circuit_info') and session.circuit_info is not None:
+                    if 'length' in session.circuit_info and pd.notna(session.circuit_info['length']):
+                        response['length'] = float(session.circuit_info['length'])
+                
+                # Get DRS zones if available
+                if hasattr(session, 'drs_zones') and session.drs_zones is not None:
+                    response['drs_zones'] = int(len(session.drs_zones))
+                
+                # Get lap record if available
+                if hasattr(session, 'laps') and session.laps is not None and not session.laps.empty:
+                    try:
+                        fastest_lap = session.laps.pick_fastest()
+                        if fastest_lap is not None and isinstance(fastest_lap, pd.Series):
+                            response['lap_record'] = {
+                                'time': str(fastest_lap['LapTime']) if pd.notna(fastest_lap['LapTime']) else None,
+                                'driver': str(fastest_lap['Driver']) if pd.notna(fastest_lap['Driver']) else None,
+                                'year': int(current_year)
+                            }
+                    except Exception:
+                        # Silently ignore failures in lap record extraction
+                        pass
+                    
+            except Exception as session_error:
+                # Log the error but don't fail the request - return what we have
+                self.logger.warning(f"Could not load detailed session data for {circuit_id}: {str(session_error)}")
+                
+            return response
+        except HTTPException:
             raise
         except Exception as e:
-            self.logger.exception(f"Error fetching circuit info for {circuit_id}: {str(e)}") # Use logger.exception
+            self.logger.exception(f"Error fetching circuit info for {circuit_id}: {str(e)}")
             raise HTTPException(
                 status_code=500, detail=f"Internal server error processing circuit info for {circuit_id}. Check server logs.")
+
+    def _get_static_circuit_data(self, circuit_id: str) -> Dict:
+        """Return static circuit data for known circuits when FastF1 data is unavailable"""
+        static_data = {
+            'bahrain': {
+                'status': 'success',
+                'circuit_id': 'bahrain',
+                'name': 'Bahrain International Circuit',
+                'country': 'Bahrain',
+                'length': 5.412,
+                'turns': 15,
+                'drs_zones': 3,
+                'lap_record': {'time': '1:31.447', 'driver': 'Pedro de la Rosa', 'year': 2005},
+                'first_grand_prix': 2004,
+                'last_grand_prix': datetime.now().year
+            },
+            'jeddah': {
+                'status': 'success',
+                'circuit_id': 'jeddah',
+                'name': 'Jeddah Corniche Circuit',
+                'country': 'Saudi Arabia',
+                'length': 6.175,
+                'turns': 27,
+                'drs_zones': 3,
+                'lap_record': {'time': '1:30.734', 'driver': 'Lewis Hamilton', 'year': 2021},
+                'first_grand_prix': 2021,
+                'last_grand_prix': datetime.now().year
+            },
+            'melbourne': {
+                'status': 'success',
+                'circuit_id': 'melbourne',
+                'name': 'Albert Park Circuit',
+                'country': 'Australia',
+                'length': 5.278,
+                'turns': 14,
+                'drs_zones': 4,
+                'lap_record': {'time': '1:20.235', 'driver': 'Charles Leclerc', 'year': 2022},
+                'first_grand_prix': 1996,
+                'last_grand_prix': datetime.now().year
+            },
+            'suzuka': {
+                'status': 'success',
+                'circuit_id': 'suzuka',
+                'name': 'Suzuka International Racing Course',
+                'country': 'Japan',
+                'length': 5.807,
+                'turns': 18,
+                'drs_zones': 2,
+                'lap_record': {'time': '1:30.983', 'driver': 'Lewis Hamilton', 'year': 2019},
+                'first_grand_prix': 1987,
+                'last_grand_prix': datetime.now().year
+            },
+            'shanghai': {
+                'status': 'success',
+                'circuit_id': 'shanghai',
+                'name': 'Shanghai International Circuit',
+                'country': 'China',
+                'length': 5.451,
+                'turns': 16,
+                'drs_zones': 2,
+                'lap_record': {'time': '1:32.238', 'driver': 'Michael Schumacher', 'year': 2004},
+                'first_grand_prix': 2004,
+                'last_grand_prix': datetime.now().year
+            },
+            'spa': {
+                'status': 'success',
+                'circuit_id': 'spa',
+                'name': 'Circuit de Spa-Francorchamps',
+                'country': 'Belgium',
+                'length': 7.004,
+                'turns': 19,
+                'drs_zones': 2,
+                'lap_record': {'time': '1:46.286', 'driver': 'Valtteri Bottas', 'year': 2018},
+                'first_grand_prix': 1950,
+                'last_grand_prix': datetime.now().year
+            },
+        }
+        
+        return static_data.get(circuit_id, None)
 
     @cached(ttl=3600)  # Cache for 1 hour
     async def get_testing_session(self, year: int, test_number: int, session_number: int) -> Dict[str, Any]:
@@ -786,9 +1032,22 @@ async def get_driver_standings(year: Optional[int] = None) -> Dict[str, Any]:
 
         # Load the session - only need results
         # Using 'last' might be unreliable if the last event wasn't a race or had no results
-        # A better approach might be needed, but let's stick to fixing serialization for now.
         session = fastf1.get_session(target_year, "last", "Race")
-        session.load(laps=False, telemetry=False, weather=False, messages=False, results=True)
+        
+        # Add try-except around session.load() to catch fastf1 loading errors
+        try:
+            # Make sure we DON'T include results=True which is not a valid parameter
+            session.load(laps=False, telemetry=False, weather=False, messages=False)
+        except (fastf1.ergast.ErgastError, fastf1._api.SessionNotAvailableError, TypeError, KeyError, Exception) as load_error:
+            # Catch specific fastf1 errors, TypeError for invalid parameters, KeyError during loading, and general exceptions
+            logger.warning(f"FastF1 failed to load data for {target_year} 'last' Race session: {load_error}")
+            # Return an error indicating data loading failure for this session
+            return {
+                "status": "error",
+                "message": f"Could not load required data for year {target_year} (Session: 'last' Race). The session might be unavailable or data missing.",
+                "data": [],
+                "year": int(target_year)
+            }
 
         # Check if results exist and are not empty
         if session and session.results is not None and not session.results.empty:
@@ -949,6 +1208,17 @@ async def get_race_results(year: int, grand_prix: str, session_type: str) -> Dic
     try:
         session = fastf1.get_session(year, grand_prix, session_type)
         if session:
+            # Load the session first with proper parameters
+            try:
+                session.load(laps=False, telemetry=False, weather=False, messages=False)
+            except Exception as load_error:
+                logger.warning(f"Failed to load data for {year} {grand_prix} {session_type}: {load_error}")
+                return {
+                    "status": "error",
+                    "message": f"Could not load session data for {grand_prix} {session_type} {year}: {str(load_error)}"
+                }
+                
+            # Now we can access results
             results = session.results
             return {
                 "status": "success",
@@ -993,6 +1263,17 @@ async def get_driver_info(driver_number: str, session_key: Optional[int] = None)
         current_year = datetime.now().year
         session = fastf1.get_session(current_year, "last", "Race")
         if session:
+            # Load the session properly before accessing data
+            try:
+                session.load(laps=False, telemetry=False, weather=False, messages=False)
+            except Exception as load_error:
+                logger.warning(f"Failed to load session data for driver info: {load_error}")
+                return {
+                    "status": "error",
+                    "message": f"Could not load required session data: {str(load_error)}"
+                }
+                
+            # Now we can access driver data
             driver_data = session.get_driver(driver_number)
             if driver_data:
                 return {
@@ -1055,6 +1336,16 @@ async def search_historical_data(
             try:
                 session = fastf1.get_session(year, "last", "Race")
                 if session:
+                    # Need to load the session before accessing any data
+                    try:
+                        session.load(laps=(category == "telemetry"), 
+                                    telemetry=False, 
+                                    weather=(category == "weather"), 
+                                    messages=False)
+                    except Exception as load_error:
+                        logger.warning(f"Failed to load data for year {year}: {load_error}")
+                        continue
+                    
                     data = None
                     if category == "drivers":
                         data = session.results
@@ -1063,7 +1354,7 @@ async def search_historical_data(
                     elif category == "telemetry":
                         data = session.laps
 
-                    if data is not None:
+                    if data is not None and not data.empty:
                         # Convert to records and filter based on query
                         records = data.to_dict('records')
                         filtered = [
